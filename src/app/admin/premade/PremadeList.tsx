@@ -1,0 +1,105 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import type { PremadeCandy } from "@/lib/data";
+import { EditPremadeItem } from "./EditPremadeItem";
+import { setPremadeActive, updatePremadeOrder } from "./actions";
+
+type PremadeAdminItem = PremadeCandy & { imageUrl: string };
+
+type Props = {
+  items: PremadeAdminItem[];
+  flavorOptions: string[];
+};
+
+function SortablePremadeItem({
+  item,
+  flavorOptions,
+  onToggleActive,
+}: {
+  item: PremadeAdminItem;
+  flavorOptions: string[];
+  onToggleActive: (id: string, nextActive: boolean) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: item.id,
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className={isDragging ? "opacity-80" : ""}>
+      <EditPremadeItem
+        item={item}
+        imageUrl={item.imageUrl}
+        flavorOptions={flavorOptions}
+        onToggleActive={onToggleActive}
+        dragHandleProps={{ ...attributes, ...listeners }}
+      />
+    </div>
+  );
+}
+
+export function PremadeList({ items, flavorOptions }: Props) {
+  const [list, setList] = useState<PremadeAdminItem[]>(items);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+
+  useEffect(() => {
+    setList(items);
+  }, [items]);
+
+  const handleToggleActive = async (id: string, nextActive: boolean) => {
+    setActionError(null);
+    setList((prev) => prev.map((item) => (item.id === id ? { ...item, is_active: nextActive } : item)));
+    const { error } = await setPremadeActive(id, nextActive);
+    if (error) {
+      setActionError(error);
+      setList((prev) => prev.map((item) => (item.id === id ? { ...item, is_active: !nextActive } : item)));
+    }
+  };
+
+  const handleDragEnd = async (event: { active: { id: string }; over: { id: string } | null }) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = list.findIndex((item) => item.id === active.id);
+    const newIndex = list.findIndex((item) => item.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+    const next = arrayMove(list, oldIndex, newIndex).map((item, index) => ({
+      ...item,
+      sort_order: index,
+    }));
+    setList(next);
+    const { error } = await updatePremadeOrder(next.map((item) => ({ id: item.id, sort_order: item.sort_order ?? 0 })));
+    if (error) {
+      setActionError(error);
+    }
+  };
+
+  const ids = useMemo(() => list.map((item) => item.id), [list]);
+
+  return (
+    <div className="space-y-3">
+      {actionError ? <p className="text-xs text-red-600">{actionError}</p> : null}
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+          <div className="space-y-3">
+            {list.map((item) => (
+              <SortablePremadeItem
+                key={item.id}
+                item={item}
+                flavorOptions={flavorOptions}
+                onToggleActive={handleToggleActive}
+              />
+            ))}
+          </div>
+        </SortableContext>
+      </DndContext>
+    </div>
+  );
+}

@@ -1,36 +1,57 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ToastProvider } from "@/components/Toast";
+import { LogoutButton } from "@/app/admin/LogoutButton";
+import { AdminBodyAttributes } from "@/app/admin/AdminBodyAttributes";
+import { AdminNav } from "@/app/admin/AdminNav";
 
-const nav = [
-  { href: "/admin/pricing", label: "Pricing" },
-  { href: "/admin/packaging", label: "Packaging" },
-  { href: "/admin/labels", label: "Labels" },
-  { href: "/admin/flavors", label: "Flavors" },
-  { href: "/admin/orders", label: "Orders" },
-  { href: "/admin/settings", label: "Settings" },
+const navSections = [
+  {
+    label: "Production schedule",
+    items: [
+      { label: "Custom Orders & Schedule", href: "/admin/orders" },
+      { label: "Pre-made Orders", href: "/admin/orders/additional-items" },
+      { label: "All Orders", href: "/admin/orders/archived" },
+    ],
+  },
+  {
+    label: "Catalog",
+    items: [{ label: "Pre-made Candy", href: "/admin/premade" }],
+  },
+  {
+    label: "Pricing",
+    items: [
+      { label: "Base Pricing", href: "/admin/pricing" },
+      { label: "Label Pricing", href: "/admin/labels" },
+      { label: "Extras Pricing", href: "/admin/settings/extras" },
+    ],
+  },
+  {
+    label: "Packaging",
+    items: [{ label: "Packaging Options & Pricing", href: "/admin/packaging" }],
+  },
+  {
+    label: "Site settings",
+    items: [
+      { label: "Colour Palette", href: "/admin/settings/palette" },
+      { label: "Production Settings", href: "/admin/settings/production" },
+      { label: "Candy Flavours", href: "/admin/flavors" },
+    ],
+  },
 ];
 
 export default async function AdminLayout({ children }: { children: ReactNode }) {
   return (
     <ToastProvider>
+      <AdminBodyAttributes />
       <div className="min-h-screen bg-white text-zinc-900">
         <header className="border-b border-zinc-200">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Admin</p>
-              <h1 className="text-lg font-semibold">Roc Candy Console</h1>
-            </div>
-            <nav className="flex items-center gap-4 text-sm font-medium text-zinc-700">
-              <Link href="/admin" className="hover:text-zinc-900">
-                Home
-              </Link>
-              {nav.map((item) => (
-                <Link key={item.href} href={item.href} className="hover:text-zinc-900">
-                  {item.label}
-                </Link>
-              ))}
-            </nav>
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-6 px-6 py-4">
+            <Link href="/admin" className="text-sm font-medium text-zinc-700 hover:text-zinc-900">
+              Home
+            </Link>
+            <AdminNav sections={navSections} />
+            <LogoutButton />
           </div>
         </header>
         <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>

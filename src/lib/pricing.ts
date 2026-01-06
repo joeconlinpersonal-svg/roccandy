@@ -4,6 +4,9 @@ import {
   getPackagingOptions,
   getSettings,
   getWeightTiers,
+  type Category,
+  type PackagingOption,
+  type SettingsRow,
   type LabelRange,
   type WeightTier,
 } from "@/lib/data";
@@ -37,6 +40,14 @@ export type PricingBreakdown = {
   items: Array<{ label: string; amount: number }>;
 };
 
+export type PricingContext = {
+  categories: Category[];
+  tiers: WeightTier[];
+  packagingOptions: PackagingOption[];
+  labelRanges: LabelRange[];
+  settings: SettingsRow;
+};
+
 function findTierForWeight(tiers: WeightTier[], weightKg: number) {
   return tiers.find((t) => weightKg >= Number(t.min_kg) && weightKg <= Number(t.max_kg));
 }
@@ -51,6 +62,11 @@ function calcTransactionFee(subtotal: number, percent: number) {
 }
 
 export async function calculatePricing(input: PricingInput): Promise<PricingBreakdown> {
+  const context = await buildPricingContext();
+  return calculatePricingWithContext(input, context);
+}
+
+export async function buildPricingContext(): Promise<PricingContext> {
   const [categories, tiers, packagingOptions, labelRanges, settings] = await Promise.all([
     getCategories(),
     getWeightTiers(),
@@ -58,7 +74,11 @@ export async function calculatePricing(input: PricingInput): Promise<PricingBrea
     getLabelRanges(),
     getSettings(),
   ]);
+  return { categories, tiers, packagingOptions, labelRanges, settings };
+}
 
+export function calculatePricingWithContext(input: PricingInput, context: PricingContext): PricingBreakdown {
+  const { categories, tiers, packagingOptions, labelRanges, settings } = context;
   const category = categories.find((c) => c.id === input.categoryId);
   if (!category) {
     throw new Error("Invalid category");
@@ -133,15 +153,17 @@ export async function calculatePricing(input: PricingInput): Promise<PricingBrea
     return sum;
   }, 0);
 
+  const subtotalBeforeUrgency = basePrice + packagingPrice + labelsPrice + extrasPrice;
   const urgencyFee = (() => {
     if (!input.dueDate) return 0;
     const due = new Date(input.dueDate);
     const now = new Date();
     const diffDays = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-    return diffDays <= settings.lead_time_days ? Number(settings.urgency_fee) : 0;
+    if (diffDays > settings.lead_time_days) return 0;
+    return subtotalBeforeUrgency * (Number(settings.urgency_fee) / 100);
   })();
 
-  const subtotal = basePrice + packagingPrice + labelsPrice + extrasPrice + urgencyFee;
+  const subtotal = subtotalBeforeUrgency + urgencyFee;
   const transactionFee = calcTransactionFee(subtotal, Number(settings.transaction_fee_percent));
   const total = subtotal + transactionFee;
 

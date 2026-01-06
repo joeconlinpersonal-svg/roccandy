@@ -62,11 +62,30 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
     [categories, draft]
   );
 
-  const validation = useMemo(() => {
-    return categories.map((cat) => {
+  const lastTierIdByCategory = useMemo(() => {
+    const map = new Map<string, string>();
+    categories.forEach((cat) => {
       const catTiers = ordered
         .filter((t) => t.category_id === cat.id)
-        .map((t) => ({ min: Number(t.min_kg), max: Number(t.max_kg) }))
+        .sort((a, b) => Number(a.min_kg) - Number(b.min_kg) || Number(a.max_kg) - Number(b.max_kg));
+      const last = catTiers[catTiers.length - 1];
+      if (last) map.set(cat.id, last.id);
+    });
+    return map;
+  }, [categories, ordered]);
+
+  const validation = useMemo(() => {
+    return categories.map((cat) => {
+      const lastTierId = lastTierIdByCategory.get(cat.id);
+      const catTiers = ordered
+        .filter((t) => t.category_id === cat.id)
+        .map((t) => ({
+          min: Number(t.min_kg),
+          max:
+            lastTierId === t.id && Number.isFinite(maxTotalKg) && maxTotalKg > 0
+              ? maxTotalKg
+              : Number(t.max_kg),
+        }))
         .sort((a, b) => a.min - b.min || a.max - b.max);
 
       if (catTiers.length === 0) return { category: cat, ok: false, message: "No tiers defined." };
@@ -79,9 +98,9 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
         cursor = t.max;
       }
       if (cursor < maxTotalKg) return { category: cat, ok: false, message: `Missing coverage to ${maxTotalKg}kg.` };
-      return { category: cat, ok: true, message: `Coverage 0–${maxTotalKg} kg OK.` };
+      return { category: cat, ok: true, message: `Coverage 0-${maxTotalKg} kg OK.` };
     });
-  }, [categories, ordered, maxTotalKg]);
+  }, [categories, lastTierIdByCategory, ordered, maxTotalKg]);
 
   const setTierValue = (id: string, updates: Partial<DraftTier>) => {
     setDraft((prev) =>
@@ -176,6 +195,7 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
       <div className="space-y-6">
         {categories.map((cat) => {
           const catTiers = ordered.filter((t) => t.category_id === cat.id);
+          const lastTierId = lastTierIdByCategory.get(cat.id);
           const status = validation.find((v) => v.category.id === cat.id);
 
           return (
@@ -187,7 +207,7 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
                 <div>
                   <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Category</p>
                   <h3 className="text-xl font-semibold text-zinc-900">{cat.name}</h3>
-                  <p className="text-xs text-zinc-500">Ranges must cover 0–{maxTotalKg} kg contiguously.</p>
+                  <p className="text-xs text-zinc-500">Ranges must cover 0-{maxTotalKg} kg contiguously.</p>
                 </div>
                 {status && (
                   <span
@@ -214,6 +234,8 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
                     </thead>
                     <tbody className="divide-y divide-zinc-100">
                       {catTiers.map((t, idx) => {
+                        const isLastTier = lastTierId === t.id && Number.isFinite(maxTotalKg) && maxTotalKg > 0;
+                        const resolvedMax = isLastTier ? maxTotalKg : t.max_kg;
                         const priorFlat = catTiers
                           .slice(0, idx)
                           .filter((tier) => !tier.per_kg)
@@ -227,7 +249,7 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
                         const priceLabel = `${formatMoney(Number(t.price))} ${t.per_kg ? "Per kg" : "Flat"}${cpgLabel}`;
                         let rangeLabel = priceLabel;
                         if (t.per_kg) {
-                          const span = Math.max(0, Number(t.max_kg) - Number(t.min_kg));
+                          const span = Math.max(0, Number(resolvedMax) - Number(t.min_kg));
                           const minPrice = baseFlat;
                           const maxPrice = baseFlat + Number(t.price) * span;
                           rangeLabel = `${formatMoney(minPrice)} - ${formatMoney(maxPrice)}`;
@@ -238,7 +260,7 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
                         return (
                           <tr key={t.id} className="bg-white hover:bg-zinc-50/70">
                             <td className="px-4 py-3 font-semibold text-zinc-800">
-                              {t.min_kg}–{t.max_kg} kg
+                              {t.min_kg}-{resolvedMax} kg
                             </td>
                             <td className="px-4 py-3 font-semibold text-zinc-900">{priceLabel}</td>
                             <td className="px-4 py-3 text-zinc-800">{rangeLabel}</td>
@@ -259,7 +281,10 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-100">
-                      {catTiers.map((t) => (
+                      {catTiers.map((t) => {
+                        const isLastTier = lastTierId === t.id && Number.isFinite(maxTotalKg) && maxTotalKg > 0;
+                        const resolvedMax = isLastTier ? maxTotalKg : t.max_kg;
+                        return (
                         <tr key={t.id} className="bg-white hover:bg-zinc-50/70">
                           <td className="px-4 py-3">
                             <input
@@ -276,8 +301,9 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
                               type="number"
                               min={START_KG}
                               max={maxTotalKg}
-                              value={t.max_kg}
+                              value={resolvedMax}
                               onChange={(e) => setTierValue(t.id, { max_kg: Number(e.target.value) })}
+                              disabled={isLastTier}
                               className="w-20 rounded border border-zinc-300 px-2 py-1 text-sm"
                             />
                           </td>
@@ -326,7 +352,8 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
                             )}
                           </td>
                         </tr>
-                      ))}
+                      );
+                      })}
                     </tbody>
                   </table>
                 )}
@@ -341,29 +368,33 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
                   >
                     + Add range
                   </button>
-                  <p className="text-xs text-zinc-500">Ensure ranges are continuous from 0–{maxTotalKg} kg.</p>
+                  <p className="text-xs text-zinc-500">Ensure ranges are continuous from 0-{maxTotalKg} kg.</p>
                 </div>
               )}
 
               {/* Hidden forms to support Save all */}
               <div className="hidden">
-                {catTiers.map((tier) => (
-                  <form
-                    key={tier.id}
-                    data-tier-form
-                    data-id={tier.id}
-                    data-new={tier.isNew ? "true" : "false"}
-                    action={upsertTier}
-                  >
-                    <input type="hidden" name="id" value={tier.isNew ? "" : tier.id} />
-                    <input type="hidden" name="category_id" value={tier.category_id} />
-                    <input type="hidden" name="min_kg" value={tier.min_kg} />
-                    <input type="hidden" name="max_kg" value={tier.max_kg} />
-                    <input type="hidden" name="price" value={tier.price} />
-                    <input type="hidden" name="per_kg" value={tier.per_kg ? "on" : ""} />
-                    <input type="hidden" name="notes" value={tier.notes ?? ""} />
-                  </form>
-                ))}
+                {catTiers.map((tier) => {
+                  const isLastTier = lastTierId === tier.id && Number.isFinite(maxTotalKg) && maxTotalKg > 0;
+                  const resolvedMax = isLastTier ? maxTotalKg : tier.max_kg;
+                  return (
+                    <form
+                      key={tier.id}
+                      data-tier-form
+                      data-id={tier.id}
+                      data-new={tier.isNew ? "true" : "false"}
+                      action={upsertTier}
+                    >
+                      <input type="hidden" name="id" value={tier.isNew ? "" : tier.id} />
+                      <input type="hidden" name="category_id" value={tier.category_id} />
+                      <input type="hidden" name="min_kg" value={tier.min_kg} />
+                      <input type="hidden" name="max_kg" value={resolvedMax} />
+                      <input type="hidden" name="price" value={tier.price} />
+                      <input type="hidden" name="per_kg" value={tier.per_kg ? "on" : ""} />
+                      <input type="hidden" name="notes" value={tier.notes ?? ""} />
+                    </form>
+                  );
+                })}
               </div>
             </div>
           );
@@ -372,3 +403,5 @@ export function PricingTable({ categories, tiers, maxTotalKg }: Props) {
     </>
   );
 }
+
+

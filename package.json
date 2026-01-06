@@ -6,16 +6,24 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "import-packaging-images": "node scripts/import-packaging-images.mjs",
+    "normalize-jar-sizes": "node scripts/normalize-jar-sizes.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@mdi/js": "^7.4.47",
+    "@mdi/react": "^1.6.1",
     "@supabase/supabase-js": "^2.86.0",
     "@tanstack/react-table": "^8.21.3",
     "framer-motion": "^12.23.25",
+    "gsap": "^3.14.2",
     "lucide-react": "^0.555.0",
-    "next": "^16.0.7",
+    "next": "^16.1.1",
     "next-auth": "^4.24.13",
+    "nodemailer": "^7.0.12",
     "react": "19.2.0",
     "react-dom": "19.2.0"
   },

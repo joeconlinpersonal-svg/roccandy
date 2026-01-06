@@ -1,14 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { Category, Flavor, PackagingOption, SettingsRow } from "@/lib/data";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import type { Category, ColorPaletteRow, Flavor, PackagingOption, PackagingOptionImage, SettingsRow } from "@/lib/data";
 import { CandyPreview } from "./CandyPreview";
+import { paletteSections } from "@/app/admin/settings/palette";
+import { useCart } from "@/components/CartProvider";
+
+type OrderTypeId = "weddings" | "text" | "branded";
 
 type Props = {
   categories: Category[];
   packagingOptions: PackagingOption[];
+  packagingImages: PackagingOptionImage[];
   settings: SettingsRow;
   flavors: Flavor[];
+  palette: ColorPaletteRow[];
+  minBasePrices: Record<string, number>;
+  initialOrderType?: OrderTypeId;
 };
 
 type Selection = { optionId: string; quantity: number };
@@ -25,36 +34,393 @@ type QuoteResult = {
   items: QuoteItem[];
 };
 
-const ORDER_TYPES = [
+type PaletteOption = {
+  id: string;
+  label: string;
+  hex: string;
+};
+
+type PaletteGroup = {
+  title: string;
+  options: PaletteOption[];
+};
+
+type Cmyk = {
+  c: number;
+  m: number;
+  y: number;
+  k: number;
+};
+
+type Rgba = {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+};
+
+function normalizeOrderType(value?: string | null): OrderTypeId | undefined {
+  if (value === "weddings" || value === "text" || value === "branded") {
+    return value as OrderTypeId;
+  }
+  return undefined;
+}
+
+function getPaletteHex(
+  palette: ColorPaletteRow[],
+  category: string,
+  shade: string,
+  fallback: string,
+) {
+  const found = palette.find((row) => row.category === category && row.shade === shade);
+  return found?.hex ?? fallback;
+}
+
+function buildPaletteGroups(palette: ColorPaletteRow[]): PaletteGroup[] {
+  const lookup = new Map(palette.map((row) => [`${row.category}:${row.shade}`, row.hex]));
+  return paletteSections.map((section) => ({
+    title: section.title,
+    options: section.items.map((item) => ({
+      id: item.name,
+      label: item.label,
+      hex: lookup.get(`${item.categoryKey}:${item.shadeKey}`) ?? item.defaultValue,
+    })),
+  }));
+}
+
+function clampChannel(value: number) {
+  return Math.min(100, Math.max(0, Math.round(value)));
+}
+
+function clampByte(value: number) {
+  return Math.min(255, Math.max(0, Math.round(value)));
+}
+
+function clampAlpha(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(1, Math.max(0, value));
+}
+
+function hexToCmyk(hex: string): Cmyk | null {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return null;
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const k = 1 - Math.max(r, g, b);
+  if (k === 1) {
+    return { c: 0, m: 0, y: 0, k: 100 };
+  }
+  const c = (1 - r - k) / (1 - k);
+  const m = (1 - g - k) / (1 - k);
+  const y = (1 - b - k) / (1 - k);
+  return {
+    c: clampChannel(c * 100),
+    m: clampChannel(m * 100),
+    y: clampChannel(y * 100),
+    k: clampChannel(k * 100),
+  };
+}
+
+function hexToRgba(hex: string, alpha = 1): Rgba | null {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return null;
+  return {
+    r: parseInt(hex.slice(1, 3), 16),
+    g: parseInt(hex.slice(3, 5), 16),
+    b: parseInt(hex.slice(5, 7), 16),
+    a: clampAlpha(alpha),
+  };
+}
+
+function cmykToHex(cmyk: Cmyk): string {
+  const c = clampChannel(cmyk.c) / 100;
+  const m = clampChannel(cmyk.m) / 100;
+  const y = clampChannel(cmyk.y) / 100;
+  const k = clampChannel(cmyk.k) / 100;
+  const r = Math.round(255 * (1 - c) * (1 - k));
+  const g = Math.round(255 * (1 - m) * (1 - k));
+  const b = Math.round(255 * (1 - y) * (1 - k));
+  const toHex = (value: number) => value.toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function rgbaToHex(rgba: Rgba): string {
+  const r = clampByte(rgba.r);
+  const g = clampByte(rgba.g);
+  const b = clampByte(rgba.b);
+  const toHex = (value: number) => value.toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function normalizeHex(value: string, fallback: string) {
+  const raw = value.trim().toLowerCase();
+  if (!raw) return fallback;
+  const withHash = raw.startsWith("#") ? raw : `#${raw}`;
+  if (/^#[0-9a-f]{3}$/.test(withHash)) {
+    const [, r, g, b] = withHash;
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  if (/^#[0-9a-f]{6}$/.test(withHash)) {
+    return withHash;
+  }
+  return fallback;
+}
+
+function parseHexInput(value: string): string | null {
+  const raw = value.trim().toLowerCase();
+  if (!raw) return null;
+  const withHash = raw.startsWith("#") ? raw : `#${raw}`;
+  if (/^#[0-9a-f]{3}$/.test(withHash)) {
+    const [, r, g, b] = withHash;
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  if (/^#[0-9a-f]{6}$/.test(withHash)) {
+    return withHash;
+  }
+  return null;
+}
+
+function sanitizeHexInput(value: string): string {
+  const stripped = value.replace(/#/g, "").replace(/[^0-9a-f]/gi, "").slice(0, 6);
+  return `#${stripped}`;
+}
+
+function PalettePicker({
+  label,
+  value,
+  onChange,
+  groups,
+  onCustom,
+}: {
+  label: string;
+  value: string;
+  onChange: (hex: string) => void;
+  groups: PaletteGroup[];
+  onCustom: () => void;
+}) {
+  const detailsRef = useRef<HTMLDetailsElement | null>(null);
+  const flat = groups.flatMap((group) => group.options);
+  const selected = flat.find((option) => option.hex.toLowerCase() === value.toLowerCase());
+  const handleSelect = (hex: string) => {
+    onChange(hex);
+    if (detailsRef.current) {
+      detailsRef.current.open = false;
+    }
+  };
+  return (
+    <details ref={detailsRef} className="rounded-lg border border-zinc-200 bg-white px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-3 text-xs font-semibold text-zinc-700">
+        <span className="uppercase tracking-[0.2em] text-zinc-500">{label}</span>
+        <span className="ml-auto flex items-center gap-2 text-[11px] font-medium text-zinc-600">
+          <span>{selected?.label ?? "Custom"}</span>
+          <span
+            style={{
+              width: 20,
+              height: 20,
+              backgroundColor: value,
+              border: "1px solid #000",
+              borderRadius: 9999,
+              boxSizing: "border-box",
+              flexShrink: 0,
+              display: "inline-block",
+            }}
+          />
+        </span>
+      </summary>
+      <div className="mt-3 grid gap-4 sm:grid-cols-2">
+        {groups.map((group) => (
+          <div key={group.title}>
+            <p className="sr-only">{group.title}</p>
+            <div className="mt grid grid-cols-3 gap-2 gap-2">
+              {group.options.map((option) => {
+                const isActive = option.hex.toLowerCase() === value.toLowerCase();
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => handleSelect(option.hex)}
+                    className={`palette-swatch h-8 w-full rounded-full border ${
+                      isActive ? "ring-2 ring-zinc-900 ring-offset-1" : ""
+                    }`}
+                    style={
+                      {
+                        backgroundColor: option.hex,
+                        "--swatch": option.hex,
+                        "--swatch-border": "#000000",
+                      } as React.CSSProperties
+                    }
+                    aria-label={option.label}
+                  >
+                    <span className="sr-only">{option.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        <div>
+          <p className="sr-only">Custom</p>
+            <button
+              type="button"
+              data-neutral-button
+              className="mt flex h-9 w-full items-center justify-center rounded-full px-3 text-[11px] font-semibold hover:text-zinc-800"
+              onClick={onCustom}
+            >
+              Custom colour
+            </button>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+const ORDER_TYPES: { id: OrderTypeId; label: string }[] = [
   { id: "weddings", label: "Weddings" },
   { id: "text", label: "Custom text" },
   { id: "branded", label: "Branded" },
 ];
 
-const ORDER_SUBTYPES: Record<string, { id: string; label: string }[]> = {
+const ORDER_SUBTYPES: Record<OrderTypeId, { id: string; label: string }[]> = {
   weddings: [
     { id: "weddings-initials", label: "Initials" },
     { id: "weddings-both-names", label: "Both names" },
   ],
   text: [
-    { id: "custom-1-6", label: "1–6 letters" },
-    { id: "custom-7-14", label: "7–14 letters" },
+    { id: "custom-1-6", label: "1-6 letters" },
+    { id: "custom-7-14", label: "7-14 letters" },
   ],
   branded: [{ id: "branded", label: "Branded" }],
 };
 
-export function QuoteBuilder({ categories, packagingOptions, settings, flavors }: Props) {
-  const [orderType, setOrderType] = useState<string>(ORDER_TYPES[0]?.id ?? "");
-  const initialSubtype = ORDER_SUBTYPES[orderType]?.[0]?.id ?? categories[0]?.id ?? "";
-  const [categoryId, setCategoryId] = useState(initialSubtype);
+const ORDER_TYPE_TITLES: Record<OrderTypeId, string> = {
+  weddings: "Wedding Candy",
+  text: "Custom Text Candy",
+  branded: "Branded Candy",
+};
+
+const SUBTITLE_BY_CATEGORY: Record<string, string> = {
+  "weddings-both-names": "Names & Hearts",
+  "weddings-initials": "Initials & Hearts",
+  "custom-1-6": "Text: Up to 6 letters",
+  "custom-7-14": "Text: 7 - 14 letters",
+  branded: "Logo Branded Candy",
+};
+
+const PACKAGING_IMAGE_BUCKET = "packaging-images";
+const FLAVOR_IMAGE_BUCKET = "flavor-images";
+const LID_COLOR_SWATCH: Record<string, string> = {
+  black: "#1f1f1f",
+  silver: "#d7d7d7",
+  gold: "#d2b16f",
+};
+
+function buildPublicImageUrl(imagePath: string | null | undefined) {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base || !imagePath) return "";
+  const encoded = encodeURIComponent(imagePath);
+  return `${base}/storage/v1/object/public/${PACKAGING_IMAGE_BUCKET}/${encoded}`;
+}
+
+function normalizeFlavorFileName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildFlavorImageUrl(name: string, cacheBust?: number) {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base || !name) return "";
+  const fileName = `${normalizeFlavorFileName(name)}.png`;
+  const encoded = encodeURIComponent(fileName);
+  const suffix = cacheBust ? `?v=${cacheBust}` : "";
+  return `${base}/storage/v1/object/public/${FLAVOR_IMAGE_BUCKET}/${encoded}${suffix}`;
+}
+
+function FlavorIcon({
+  name,
+  cacheBust,
+  className,
+}: {
+  name: string;
+  cacheBust: number;
+  className: string;
+}) {
+  const [hasError, setHasError] = useState(false);
+  const src = buildFlavorImageUrl(name, cacheBust);
+  if (!src || hasError) return null;
+  return (
+    <img
+      src={src}
+      alt={`${name} icon`}
+      className={className}
+      loading="lazy"
+      onError={() => setHasError(true)}
+    />
+  );
+}
+
+export function QuoteBuilder({
+  categories,
+  packagingOptions,
+  packagingImages,
+  settings,
+  flavors,
+  palette,
+  minBasePrices,
+  initialOrderType,
+}: Props) {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const { addCustomItem } = useCart();
+  const paletteGroups = useMemo(() => buildPaletteGroups(palette), [palette]);
+  const [flavorCacheBust, setFlavorCacheBust] = useState(0);
+  useEffect(() => {
+    setFlavorCacheBust(Date.now());
+  }, [flavors]);
+  const defaultJacketColor = useMemo(
+    () => getPaletteHex(palette, "grey", "light", "#d1d5db"),
+    [palette],
+  );
+  const defaultTextColor = useMemo(
+    () => getPaletteHex(palette, "grey", "light", "#b7b7b7"),
+    [palette],
+  );
+    const resolvedInitialOrderType =
+      ORDER_TYPES.find((type) => type.id === initialOrderType)?.id ?? ORDER_TYPES[0]?.id ?? "weddings";
+    const queryOrderType = normalizeOrderType(searchParams?.get("type"));
+    const querySubtype = searchParams?.get("subtype") ?? undefined;
+    const initialOrderTypeResolved = queryOrderType ?? resolvedInitialOrderType;
+    const hasExplicitOrderType = Boolean(queryOrderType || initialOrderType);
+    const validInitialQuerySubtype =
+      querySubtype && ORDER_SUBTYPES[initialOrderTypeResolved]?.some((sub) => sub.id === querySubtype)
+        ? querySubtype
+        : undefined;
+    const initialSubtype = (() => {
+      if (validInitialQuerySubtype) return validInitialQuerySubtype;
+      if (initialOrderTypeResolved === "branded") {
+        return ORDER_SUBTYPES.branded[0]?.id ?? "branded";
+      }
+      if (hasExplicitOrderType) return "";
+      return ORDER_SUBTYPES[initialOrderTypeResolved]?.[0]?.id ?? categories[0]?.id ?? "";
+    })();
+    const [orderType, setOrderType] = useState<OrderTypeId>(initialOrderTypeResolved);
+    const [categoryId, setCategoryId] = useState(initialSubtype);
+  const showSubtype = orderType !== "branded";
+  const needsSubtypeSelection = showSubtype && !categoryId;
 
   const [selectionType, setSelectionType] = useState<string>("");
   const [selectionSize, setSelectionSize] = useState<string>("");
-  const [selectionQty, setSelectionQty] = useState(0);
+  const [selectionQtyInput, setSelectionQtyInput] = useState("1");
+  const [jarLidColor, setJarLidColor] = useState("");
+  const [packagingImageFailed, setPackagingImageFailed] = useState(false);
 
   const [labelsOptIn, setLabelsOptIn] = useState(false);
+  const [ingredientLabelsOptIn, setIngredientLabelsOptIn] = useState(false);
   const [labelCountOverride, setLabelCountOverride] = useState(0);
-  const [dueDate, setDueDate] = useState("");
+  const [labelImageUrl, setLabelImageUrl] = useState("");
+  const [labelImageError, setLabelImageError] = useState<string | null>(null);
   const [rainbowJacket, setRainbowJacket] = useState(false);
   const [pinstripeJacket, setPinstripeJacket] = useState(false);
   const [twoColourJacket, setTwoColourJacket] = useState(false);
@@ -64,30 +430,55 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [placing, setPlacing] = useState(false);
   const [placeError, setPlaceError] = useState<string | null>(null);
-  const [placeSuccess, setPlaceSuccess] = useState<string | null>(null);
-  const [pickup, setPickup] = useState(false);
-  const [stateValue, setStateValue] = useState("");
-  const [addressLine1, setAddressLine1] = useState("");
-  const [addressLine2, setAddressLine2] = useState("");
-  const [suburb, setSuburb] = useState("");
-  const [postcode, setPostcode] = useState("");
   const [initialOne, setInitialOne] = useState("");
   const [initialTwo, setInitialTwo] = useState("");
   const [nameOne, setNameOne] = useState("");
   const [nameTwo, setNameTwo] = useState("");
   const [customText, setCustomText] = useState("");
   const [orgName, setOrgName] = useState("");
-  const [customerName, setCustomerName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [customerEmail, setCustomerEmail] = useState("");
-  const [phone, setPhone] = useState("");
   const [flavor, setFlavor] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("");
-  const [jacketColorOne, setJacketColorOne] = useState("#000000");
-  const [jacketColorTwo, setJacketColorTwo] = useState("#000000");
+  const [jacketColorOne, setJacketColorOne] = useState(defaultJacketColor);
+  const [jacketColorTwo, setJacketColorTwo] = useState(defaultJacketColor);
   const [logoUrl, setLogoUrl] = useState("");
-  const [heartColor, setHeartColor] = useState("#b7b7b7");
-  const [textColor, setTextColor] = useState("#b7b7b7");
+  const [logoError, setLogoError] = useState<string | null>(null);
+  const [heartColor, setHeartColor] = useState(defaultTextColor);
+  const [textColor, setTextColor] = useState(defaultTextColor);
+  const [customPickerOpen, setCustomPickerOpen] = useState(false);
+  const [customTarget, setCustomTarget] = useState<"heart" | "text" | "jacket1" | "jacket2" | null>(null);
+  const [customHex, setCustomHex] = useState(defaultJacketColor);
+  const [customHexInput, setCustomHexInput] = useState(defaultJacketColor);
+  const [customCmyk, setCustomCmyk] = useState<Cmyk>(() => hexToCmyk(defaultJacketColor) ?? { c: 0, m: 0, y: 0, k: 0 });
+  const [customRgba, setCustomRgba] = useState<Rgba>(() => hexToRgba(defaultJacketColor) ?? { r: 0, g: 0, b: 0, a: 1 });
+  const [customInputMode, setCustomInputMode] = useState<"hex" | "cmyk" | "rgba">("hex");
+  const designSectionRef = useRef<HTMLDivElement | null>(null);
+  const previewWrapRef = useRef<HTMLDivElement | null>(null);
+  const previewStickyRef = useRef<HTMLDivElement | null>(null);
+  const priceSectionRef = useRef<HTMLDivElement | null>(null);
+  const priceWrapRef = useRef<HTMLDivElement | null>(null);
+  const priceStickyRef = useRef<HTMLDivElement | null>(null);
+  const flavorDetailsRef = useRef<HTMLDetailsElement | null>(null);
+  const hasManualSubtypeRef = useRef(false);
+
+  const openCustomPicker = (target: "heart" | "text" | "jacket1" | "jacket2", current: string) => {
+    const normalized = normalizeHex(current, defaultJacketColor);
+    setCustomTarget(target);
+    setCustomHex(normalized);
+    setCustomHexInput(normalized);
+    setCustomCmyk(hexToCmyk(normalized) ?? { c: 0, m: 0, y: 0, k: 0 });
+    setCustomRgba(hexToRgba(normalized) ?? { r: 0, g: 0, b: 0, a: 1 });
+    setCustomInputMode("hex");
+    setCustomPickerOpen(true);
+  };
+
+  const applyCustomColor = () => {
+    if (!customTarget) return;
+    const normalized = normalizeHex(customHex, defaultJacketColor);
+    if (customTarget === "heart") setHeartColor(normalized);
+    if (customTarget === "text") setTextColor(normalized);
+    if (customTarget === "jacket1") setJacketColorOne(normalized);
+    if (customTarget === "jacket2") setJacketColorTwo(normalized);
+    setCustomPickerOpen(false);
+  };
   const toggleRainbow = () =>
     setRainbowJacket((prev) => {
       const next = !prev;
@@ -109,6 +500,40 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
       if (next) setRainbowJacket(false);
       return next;
     });
+  useEffect(() => {
+    const urlOrderType =
+      typeof window !== "undefined"
+        ? normalizeOrderType(new URLSearchParams(window.location.search).get("type"))
+        : undefined;
+      const nextOrderType = queryOrderType ?? initialOrderType ?? urlOrderType;
+      if (!nextOrderType) return;
+
+      const validQuerySubtype =
+        querySubtype && ORDER_SUBTYPES[nextOrderType]?.some((sub) => sub.id === querySubtype) ? querySubtype : undefined;
+      const isValidSubtype = ORDER_SUBTYPES[nextOrderType]?.some((sub) => sub.id === categoryId);
+      const allowQuerySubtype = !hasManualSubtypeRef.current;
+      const hasExplicitOrderType = Boolean(queryOrderType || initialOrderType || urlOrderType);
+      const shouldRequireSubtypeSelection =
+        hasExplicitOrderType && !validQuerySubtype && nextOrderType !== "branded" && !hasManualSubtypeRef.current;
+
+      let nextSubtype = categoryId;
+      if (allowQuerySubtype && validQuerySubtype) {
+        nextSubtype = validQuerySubtype;
+      } else if (shouldRequireSubtypeSelection) {
+        nextSubtype = "";
+      } else if (nextOrderType === "branded") {
+        nextSubtype = ORDER_SUBTYPES.branded[0]?.id ?? "branded";
+      } else if (!isValidSubtype) {
+        nextSubtype = ORDER_SUBTYPES[nextOrderType]?.[0]?.id ?? "";
+      }
+
+      if (nextOrderType !== orderType) {
+        setOrderType(nextOrderType);
+      }
+      if (nextSubtype !== categoryId) {
+        setCategoryId(nextSubtype);
+      }
+    }, [queryOrderType, querySubtype, initialOrderType, orderType, categoryId]);
   const rainbowDisabled = pinstripeJacket || twoColourJacket;
   const pinstripeDisabled = rainbowJacket;
   const twoColourDisabled = rainbowJacket;
@@ -116,7 +541,63 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
   const previewShowPinstripe = pinstripeJacket;
   const showColourTwo = twoColourJacket && !rainbowJacket;
   const formatMoney = (value: number) => `$${value.toFixed(2)}`;
+  const mainTitle = ORDER_TYPE_TITLES[orderType] ?? "Candy";
+  const subtitleLabel =
+    SUBTITLE_BY_CATEGORY[categoryId] ?? categories.find((category) => category.id === categoryId)?.name ?? "";
+  const basePrice = minBasePrices[categoryId];
+  const hasBasePrice = typeof basePrice === "number" && Number.isFinite(basePrice);
+  const subtitle = subtitleLabel && hasBasePrice ? `${subtitleLabel} - price from ${formatMoney(basePrice)}` : subtitleLabel;
+  const handleLogoUpload = (file?: File | null) => {
+    if (!file) {
+      setLogoUrl("");
+      setLogoError(null);
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setLogoUrl("");
+      setLogoError("File is too large. Max 2MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      setLogoUrl(result);
+      setLogoError(null);
+    };
+    reader.onerror = () => {
+      setLogoUrl("");
+      setLogoError("Unable to read the file.");
+    };
+    reader.readAsDataURL(file);
+  };
+  const handleLabelUpload = (file?: File | null) => {
+    if (!file) {
+      setLabelImageUrl("");
+      setLabelImageError(null);
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setLabelImageUrl("");
+      setLabelImageError("File is too large. Max 2MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      setLabelImageUrl(result);
+      setLabelImageError(null);
+    };
+    reader.onerror = () => {
+      setLabelImageUrl("");
+      setLabelImageError("Unable to read the file.");
+    };
+    reader.readAsDataURL(file);
+  };
 
+  const selectionQty = useMemo(() => {
+    const parsed = Number(selectionQtyInput);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }, [selectionQtyInput]);
   const totalPackages = useMemo(() => selectionQty, [selectionQty]);
 
   const filteredPackaging = useMemo(
@@ -129,18 +610,51 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
     [filteredPackaging]
   );
 
-  // If the selected type is no longer valid for this category, reset it.
+  // Keep a valid default selection for type/size when options load or change.
   useEffect(() => {
-    if (selectionType && !packagingTypes.includes(selectionType)) {
-      setSelectionType("");
+    if (packagingTypes.length === 0) {
+      if (selectionType) setSelectionType("");
+      if (selectionSize) setSelectionSize("");
+      return;
+    }
+    if (!selectionType || !packagingTypes.includes(selectionType)) {
+      setSelectionType(packagingTypes[0]);
       setSelectionSize("");
     }
-  }, [packagingTypes, selectionType]);
+  }, [packagingTypes, selectionType, selectionSize]);
 
-  const sizesForType = useMemo(
-    () => filteredPackaging.filter((p) => (selectionType ? p.type === selectionType : true)),
-    [filteredPackaging, selectionType]
-  );
+  const sizesForType = useMemo(() => {
+    if (!selectionType) return [];
+    const extractLeadingNumber = (value: string) => {
+      const match = value.trim().match(/^(\d+)/);
+      return match ? Number(match[1]) : null;
+    };
+    return filteredPackaging
+      .filter((p) => p.type === selectionType)
+      .map((opt, index) => ({ opt, index }))
+      .sort((a, b) => {
+        const aNum = extractLeadingNumber(a.opt.size);
+        const bNum = extractLeadingNumber(b.opt.size);
+        if (aNum !== null && bNum !== null) {
+          return aNum - bNum;
+        }
+        if (aNum !== null) return -1;
+        if (bNum !== null) return 1;
+        return a.index - b.index;
+      })
+      .map(({ opt }) => opt);
+  }, [filteredPackaging, selectionType]);
+
+  useEffect(() => {
+    if (!selectionType) return;
+    if (sizesForType.length === 0) {
+      if (selectionSize) setSelectionSize("");
+      return;
+    }
+    if (!selectionSize || !sizesForType.some((opt) => opt.size === selectionSize)) {
+      setSelectionSize(sizesForType[0].size);
+    }
+  }, [selectionType, selectionSize, sizesForType]);
 
   const selectedOptionId = useMemo(() => {
     const found = sizesForType.find((p) => p.size === selectionSize);
@@ -151,6 +665,38 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
     () => packagingOptions.find((p) => p.id === selectedOptionId),
     [packagingOptions, selectedOptionId]
   );
+  const isJarOption = useMemo(
+    () => (selectedOption?.type ?? "").toLowerCase().includes("jar"),
+    [selectedOption]
+  );
+  const availableLidColors = useMemo(
+    () => (selectedOption?.lid_colors ?? []).filter(Boolean),
+    [selectedOption]
+  );
+
+  useEffect(() => {
+    if (!selectedOption?.max_packages) return;
+    const parsed = Number(selectionQtyInput);
+    if (!Number.isFinite(parsed)) return;
+    const maxPackages = Number(selectedOption.max_packages);
+    if (!Number.isFinite(maxPackages)) return;
+    if (parsed <= maxPackages) return;
+    setSelectionQtyInput(String(maxPackages));
+  }, [selectionQtyInput, selectedOption?.max_packages]);
+
+  useEffect(() => {
+    if (!isJarOption) {
+      if (jarLidColor) setJarLidColor("");
+      return;
+    }
+    if (availableLidColors.length === 0) {
+      if (jarLidColor) setJarLidColor("");
+      return;
+    }
+    if (!availableLidColors.includes(jarLidColor)) {
+      setJarLidColor(availableLidColors[0]);
+    }
+  }, [availableLidColors, isJarOption, jarLidColor]);
 
   const hasBulkSelection = useMemo(() => {
     const opt = packagingOptions.find((p) => p.id === selectedOptionId);
@@ -163,6 +709,28 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
     const totalG = opt ? Number(opt.candy_weight_g) * selectionQty : 0;
     return totalG / 1000;
   }, [selectionQty, selectedOptionId, packagingOptions]);
+
+  const packagingImage = useMemo(() => {
+    if (!selectedOptionId || !categoryId) return null;
+    const lidKey = isJarOption ? jarLidColor : "";
+    return (
+      packagingImages.find(
+        (img) =>
+          img.packaging_option_id === selectedOptionId &&
+          img.category_id === categoryId &&
+          img.lid_color === lidKey
+      ) ?? null
+    );
+  }, [categoryId, isJarOption, jarLidColor, packagingImages, selectedOptionId]);
+
+  const packagingImageUrl = useMemo(
+    () => buildPublicImageUrl(packagingImage?.image_path),
+    [packagingImage?.image_path]
+  );
+
+  useEffect(() => {
+    setPackagingImageFailed(false);
+  }, [packagingImageUrl]);
 
   const isWedding = orderType === "weddings";
   const isWeddingInitials = isWedding && categoryId.includes("weddings-initials");
@@ -180,27 +748,67 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
   const designValid = Boolean(
     (isWedding && (isWeddingInitials ? initialOne && initialTwo : nameOne && nameTwo)) ||
       (isText && customText) ||
-      (isBranded && orgName && logoUrl) ||
+      (isBranded && logoUrl) ||
       (!isWedding && !isText && !isBranded) // fallback
   );
-  const addressValid = pickup || Boolean(addressLine1 && suburb && postcode && stateValue);
-  const contactValid = Boolean(customerName && lastName && customerEmail && phone);
+  const designRequirementLabel = isWedding
+    ? isWeddingInitials
+      ? "Initials"
+      : "Names"
+    : isText
+      ? "Custom text"
+    : isBranded
+        ? "Design upload"
+        : "Design details";
   const flavorValid = Boolean(flavor);
-  const paymentValid = Boolean(paymentMethod);
   const canPlace =
     !!result &&
-    !!dueDate &&
     designValid &&
     flavorValid &&
-    paymentValid &&
-    contactValid &&
-    addressValid;
+    (!labelsOptIn || !!labelImageUrl);
+  const missingFields = useMemo(() => {
+    const missing: string[] = [];
+    if (!selectedOptionId || selectionQty <= 0) {
+      missing.push("Packaging & quantity");
+    }
+    if (!designValid) {
+      missing.push(designRequirementLabel);
+    }
+    if (!flavorValid) {
+      missing.push("Candy flavor");
+    }
+    if (labelsOptIn && !labelImageUrl) {
+      missing.push("Label artwork");
+    }
+    return missing;
+  }, [
+    designRequirementLabel,
+    designValid,
+    flavorValid,
+    labelImageUrl,
+    labelsOptIn,
+    selectedOptionId,
+    selectionQty,
+  ]);
 
   useEffect(() => {
     if (!hasBulkSelection) {
       setLabelCountOverride(0);
     }
   }, [hasBulkSelection]);
+
+  useEffect(() => {
+    if (!labelsOptIn) {
+      setLabelImageUrl("");
+      setLabelImageError(null);
+    }
+  }, [labelsOptIn]);
+
+  useEffect(() => {
+    if (hasBulkSelection && labelsOptIn && labelCountOverride === 0 && totalPackages > 0) {
+      setLabelCountOverride(Math.min(totalPackages, settings.labels_max_bulk));
+    }
+  }, [hasBulkSelection, labelsOptIn, labelCountOverride, totalPackages, settings.labels_max_bulk]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -218,7 +826,6 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
           categoryId: string;
           packaging: Selection[];
           labelsCount?: number;
-          dueDate?: string;
           extras?: { jacket: "rainbow" | "two_colour" | "pinstripe" }[];
         } = {
           categoryId,
@@ -236,7 +843,6 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
             body.labelsCount = totalPackages;
           }
         }
-        if (dueDate) body.dueDate = dueDate;
         const jacketExtras: { jacket: "rainbow" | "two_colour" | "pinstripe" }[] = [];
         if (rainbowJacket) jacketExtras.push({ jacket: "rainbow" });
         if (twoColourJacket) jacketExtras.push({ jacket: "two_colour" });
@@ -258,6 +864,7 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
           setError(null);
         }
       } catch (err) {
+        if (controller.signal.aborted) return;
         if (err instanceof DOMException && err.name === "AbortError") return;
         const message = err instanceof Error ? err.message : "Unable to calculate";
         setError(message);
@@ -276,7 +883,6 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
     selectedOptionId,
     selectionQty,
     totalPackages,
-    dueDate,
     rainbowJacket,
     pinstripeJacket,
     twoColourJacket,
@@ -286,166 +892,457 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
     settings.labels_max_bulk,
   ]);
 
+  useEffect(() => {
+    const container = designSectionRef.current;
+    const preview = previewWrapRef.current;
+    const stickyEl = previewStickyRef.current;
+    if (!container || !preview || !stickyEl) return;
+
+    const mql = window.matchMedia("(max-width: 1023px)");
+    const priceSticky = priceStickyRef.current;
+    const headerEl = document.querySelector<HTMLElement>("[data-quote-header]");
+    const topGap = 16;
+    const priceGap = 12;
+    let raf = 0;
+
+    const reset = () => {
+      stickyEl.style.position = "static";
+      stickyEl.style.top = "";
+      stickyEl.style.left = "";
+      stickyEl.style.width = "";
+      stickyEl.style.zIndex = "";
+      preview.style.height = "";
+    };
+
+    const update = () => {
+      if (!mql.matches) {
+        reset();
+        return;
+      }
+      const containerRect = container.getBoundingClientRect();
+      const wrapRect = preview.getBoundingClientRect();
+      const scrollY = window.scrollY;
+      const containerTop = scrollY + containerRect.top;
+      const containerBottom = containerTop + containerRect.height;
+      const wrapTop = scrollY + wrapRect.top;
+      const previewHeight = stickyEl.offsetHeight;
+      const priceHeight = priceSticky?.offsetHeight ?? 0;
+      const baseOffset = (headerEl?.getBoundingClientRect().height ?? 0) + topGap;
+      const topOffset = baseOffset + priceHeight + priceGap;
+
+      const start = wrapTop - topOffset;
+      const end = containerBottom - topOffset - previewHeight;
+
+      if (scrollY < start) {
+        reset();
+        return;
+      }
+
+      preview.style.height = `${previewHeight}px`;
+      const width = wrapRect.width;
+      const left = wrapRect.left;
+
+      if (scrollY <= end) {
+        stickyEl.style.position = "fixed";
+        stickyEl.style.top = `${topOffset}px`;
+        stickyEl.style.left = `${left}px`;
+        stickyEl.style.width = `${width}px`;
+        stickyEl.style.zIndex = "20";
+        return;
+      }
+
+      const absoluteTop = container.clientHeight - previewHeight;
+      stickyEl.style.position = "absolute";
+      stickyEl.style.top = `${absoluteTop}px`;
+      stickyEl.style.left = `${wrapRect.left - containerRect.left}px`;
+      stickyEl.style.width = `${width}px`;
+      stickyEl.style.zIndex = "1";
+    };
+
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(update);
+    };
+
+    const observer = new ResizeObserver(onScroll);
+    observer.observe(container);
+    observer.observe(preview);
+    if (priceSticky) {
+      observer.observe(priceSticky);
+    }
+    if (headerEl) {
+      observer.observe(headerEl);
+    }
+
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    mql.addEventListener("change", onScroll);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      mql.removeEventListener("change", onScroll);
+      observer.disconnect();
+      reset();
+    };
+  }, [selectionQty, selectedOptionId]);
+
+  useEffect(() => {
+    const container = priceSectionRef.current;
+    const wrap = priceWrapRef.current;
+    const stickyEl = priceStickyRef.current;
+    if (!container || !wrap || !stickyEl) return;
+
+    const headerEl = document.querySelector<HTMLElement>("[data-quote-header]");
+    const topGap = 16;
+    let raf = 0;
+
+    const reset = () => {
+      stickyEl.style.position = "static";
+      stickyEl.style.top = "";
+      stickyEl.style.left = "";
+      stickyEl.style.width = "";
+      stickyEl.style.zIndex = "";
+      wrap.style.height = "";
+    };
+
+    const update = () => {
+      const containerRect = container.getBoundingClientRect();
+      const wrapRect = wrap.getBoundingClientRect();
+      const scrollY = window.scrollY;
+      const containerTop = scrollY + containerRect.top;
+      const containerBottom = containerTop + containerRect.height;
+      const wrapTop = scrollY + wrapRect.top;
+      const stickyHeight = stickyEl.offsetHeight;
+      const topOffset = (headerEl?.getBoundingClientRect().height ?? 0) + topGap;
+
+      const start = wrapTop - topOffset;
+      const end = containerBottom - topOffset - stickyHeight;
+
+      if (scrollY < start) {
+        reset();
+        return;
+      }
+
+      wrap.style.height = `${stickyHeight}px`;
+      const width = wrapRect.width;
+      const left = wrapRect.left;
+
+      if (scrollY <= end) {
+        stickyEl.style.position = "fixed";
+        stickyEl.style.top = `${topOffset}px`;
+        stickyEl.style.left = `${left}px`;
+        stickyEl.style.width = `${width}px`;
+        stickyEl.style.zIndex = "30";
+        return;
+      }
+
+      const absoluteTop = container.clientHeight - stickyHeight;
+      stickyEl.style.position = "absolute";
+      stickyEl.style.top = `${absoluteTop}px`;
+      stickyEl.style.left = `${wrapRect.left - containerRect.left}px`;
+      stickyEl.style.width = `${width}px`;
+      stickyEl.style.zIndex = "1";
+    };
+
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(update);
+    };
+
+    const observer = new ResizeObserver(onScroll);
+    observer.observe(container);
+    observer.observe(wrap);
+    observer.observe(stickyEl);
+    if (headerEl) {
+      observer.observe(headerEl);
+    }
+
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      observer.disconnect();
+      reset();
+    };
+  }, []);
+
+
   return (
-    <div className="relative flex items-start justify-center gap-6 pr-[360px]">
-      <div className="flex-1 min-w-0 max-w-3xl space-y-6">
-        {/* Step 1: Order type */}
-        <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-          <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Step 1</p>
-          <h3 className="text-lg font-semibold text-zinc-900">Choose your order type</h3>
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
-            {ORDER_TYPES.map((type) => (
-              <button
-                key={type.id}
-                type="button"
-                onClick={() => {
-                  const nextSubtype = ORDER_SUBTYPES[type.id]?.[0]?.id ?? "";
-                  setOrderType(type.id);
-                  setCategoryId(nextSubtype);
-                }}
-                className={`rounded-xl border px-3 py-3 text-sm font-semibold transition ${
-                  orderType === type.id
-                    ? "border-zinc-900 bg-zinc-900 text-white"
-                    : "border-zinc-200 bg-white hover:border-zinc-300"
-                }`}
-              >
-                {type.label}
-              </button>
-            ))}
+    <div className="relative space-y-6">
+      <section className="pt-10 text-center lg:mx-auto lg:max-w-5xl">
+        <h1 className="text-5xl font-semibold tracking-tight text-zinc-900 sm:text-6xl">{mainTitle}</h1>
+        {subtitle && <p className="mt-2 text-xl text-zinc-600 sm:text-2xl">{subtitle}</p>}
+      </section>
+
+      <div ref={priceSectionRef} className="relative min-w-0 space-y-6 lg:mx-auto lg:max-w-5xl">
+        {/* Price sidebar */}
+        <div ref={priceWrapRef} className="relative">
+          <div ref={priceStickyRef} className="w-full">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm shadow-lg lg:shadow-lg">
+              {needsSubtypeSelection ? (
+                <p className="text-sm text-zinc-500 text-center">Select your order type</p>
+              ) : result ? (
+                <div className="space-y-2">
+                  {(() => {
+                    const subtotal = Math.max(0, result.total - result.transactionFee);
+                    return (
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-baseline gap-2">
+                          <p className="text-2xl font-semibold leading-none">${subtotal.toFixed(2)}</p>
+                          {loading && (
+                            <span className="inline-flex items-center">
+                              <span className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-700" />
+                              <span className="sr-only">Updating</span>
+                            </span>
+                          )}
+                        </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowBreakdown((prev) => !prev)}
+                            data-neutral-button
+                            className="rounded px-2 py-1 text-xs font-semibold hover:border-zinc-400"
+                          >
+                            {showBreakdown ? "Hide breakdown" : "Show breakdown"}
+                          </button>
+                      </div>
+                    );
+                  })()}
+                  {showBreakdown && (
+                    <div className="space-y-1 text-sm text-zinc-700">
+                      {result.items.map((item: QuoteItem) => (
+                        <div key={item.label} className="flex justify-between border-b border-zinc-100 pb-1">
+                          <span>{item.label}</span>
+                          <span>${item.amount.toFixed(2)}</span>
+                        </div>
+                      ))}
+                      <div className="mt-1 border-t border-zinc-200 pt-1 text-zinc-700">
+                        <p className="text-[11px] text-zinc-500">Subtotal excludes transaction fee.</p>
+                        <div className="flex justify-between text-xs">
+                          <span>Total with fee</span>
+                          <span>${result.total.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-zinc-500">
+                  {loading ? "Calculating..." : "Select packaging to see price"}
+                </p>
+              )}
+              {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+            </div>
           </div>
         </div>
-
-        {/* Step 2: Subtype */}
-        <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-          <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Step 2</p>
-          <h3 className="text-lg font-semibold text-zinc-900">Choose subtype</h3>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {ORDER_SUBTYPES[orderType]?.map((sub) => {
-              const cat = categories.find((c) => c.id === sub.id);
-              return (
-                <button
-                  key={sub.id}
-                  type="button"
-                  onClick={() => {
-                    setCategoryId(sub.id);
-                  }}
-                  className={`rounded-xl border px-3 py-2 text-left text-sm font-semibold transition ${
-                    categoryId === sub.id
-                      ? "border-zinc-900 bg-zinc-900 text-white"
-                      : "border-zinc-200 bg-white hover:border-zinc-300"
-                  }`}
-                >
-                  <span className="block">{cat?.name ?? sub.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Step 3: Packaging (single selection) */}
-        {categoryId && (
-          <div className="space-y-3 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Step 3</p>
-                <h3 className="text-lg font-semibold text-zinc-900">Select packaging</h3>
+        {/* Step 1: Subtype */}
+        {showSubtype && (
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <div>
+                <div className="flex w-full overflow-hidden rounded-full border border-[#e91e63] bg-[#fedae1] divide-x divide-[#e91e63]">
+                  {ORDER_SUBTYPES[orderType]?.map((sub, index) => {
+                    const cat = categories.find((c) => c.id === sub.id);
+                    const label = (() => {
+                      if (sub.id === "custom-1-6") {
+                        return cat?.name ? cat.name.replace("(1-6)", "(1-6 letters)") : "1-6 letters";
+                      }
+                      if (sub.id === "custom-7-14") {
+                        return cat?.name ? cat.name.replace("(7-14)", "(7-14 letters)") : "7-14 letters";
+                      }
+                      return cat?.name ?? sub.label;
+                    })();
+                    const isActive = categoryId === sub.id;
+                    return (
+                      <button
+                        key={sub.id}
+                        type="button"
+                        data-segmented
+                        data-active={isActive ? "true" : "false"}
+                        onClick={() => {
+                          hasManualSubtypeRef.current = true;
+                          setCategoryId(sub.id);
+                        }}
+                        className="flex-1 px-4 py-3 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
               </div>
-              <p className="text-xs text-zinc-500">
-                Filtered to {categories.find((c) => c.id === categoryId)?.name ?? "selected"}.
-              </p>
             </div>
-
-            <div className="grid gap-3 md:grid-cols-4">
-              <label className="text-sm text-zinc-700">
-                Packaging type
-                <select
-                  value={selectionType}
-                  onChange={(e) => {
-                    setSelectionType(e.target.value);
-                    setSelectionSize("");
-                  }}
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2"
-                >
-                  <option value="">Select type</option>
-                  {packagingTypes.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-sm text-zinc-700">
-                Packaging size
-                <select
-                  value={selectionSize}
-                  onChange={(e) => setSelectionSize(e.target.value)}
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2"
-                  disabled={!selectionType}
-                >
-                  <option value="">Select size</option>
-                  {sizesForType.map((opt) => (
-                    <option key={opt.id} value={opt.size}>
-                      {opt.size} ({opt.candy_weight_g}g, ${opt.unit_price.toFixed(2)})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-sm text-zinc-700">
-                Quantity{selectedOption ? ` (max ${selectedOption.max_packages})` : ""}
-                <input
-                  type="number"
-                  min={0}
-                  value={selectionQty}
-                  onChange={(e) => setSelectionQty(Number(e.target.value))}
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2"
-                />
-              </label>
-            </div>
-
-            {selectedOption && selectionQty > 0 && (
-              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
-                <div className="flex justify-between">
-                  <span>{selectedOption.type}</span>
-                  <span>{selectedOption.size}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Quantity</span>
-                  <span>{selectionQty}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Weight</span>
-                  <span>{(selectedOption.candy_weight_g * selectionQty).toFixed(0)} g</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Subtotal</span>
-                  <span>${(selectedOption.unit_price * selectionQty).toFixed(2)}</span>
-                </div>
-              </div>
-            )}
-            <p className="text-xs text-zinc-600">
-              Estimated total weight: {totalWeightKg.toFixed(2)} kg · Labels match total packages (
-              {totalPackages})
-            </p>
           </div>
         )}
 
-        {/* Step 4: Extras */}
-        {selectionQty > 0 && selectedOptionId && (
-          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Step 4</p>
-            <h3 className="text-lg font-semibold text-zinc-900">Labels & extras</h3>
-            <div className="mt-3 grid gap-4 md:grid-cols-3">
-              <div className="text-sm text-zinc-700 space-y-2">
-                <div className="flex items-center gap-2">
+        <div className={`space-y-6 ${needsSubtypeSelection ? "opacity-40 pointer-events-none" : ""}`}>
+          {/* Step 2: Packaging (single selection) */}
+          <div className="space-y-3 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-zinc-900">Select packaging</h3>
+              </div>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2 items-stretch">
+              <div className="space-y-3">
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Packaging type</p>
+                      <div className="flex w-full flex-col overflow-hidden rounded-2xl border border-[#e91e63] bg-[#fedae1] divide-y divide-[#e91e63]/30">
+                        {packagingTypes.length > 0 ? (
+                          packagingTypes.map((type, index) => {
+                            const isActive = selectionType === type;
+                            return (
+                              <button
+                                key={type}
+                                type="button"
+                                data-segmented
+                                data-active={isActive ? "true" : "false"}
+                                onClick={() => {
+                                  setSelectionType(type);
+                                  setSelectionSize("");
+                                }}
+                                className="w-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                              >
+                                {type}
+                              </button>
+                            );
+                          })
+                      ) : (
+                        <span className="w-full px-4 py-3 text-center text-xs font-semibold uppercase tracking-[0.2em] text-zinc-400">
+                          No types available
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Packaging size</p>
+                      <div
+                        className={`flex w-full flex-col overflow-hidden rounded-2xl border ${
+                          selectionType
+                            ? "border-[#e91e63] bg-[#fedae1] divide-y divide-[#e91e63]/30"
+                            : "border-zinc-200 bg-zinc-50"
+                        }`}
+                      >
+                        {selectionType ? (
+                          sizesForType.map((opt, index) => {
+                            const isActive = selectionSize === opt.size;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                data-segmented
+                                data-active={isActive ? "true" : "false"}
+                                onClick={() => setSelectionSize(opt.size)}
+                                className="w-full px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] transition"
+                              >
+                                <span className="whitespace-nowrap">{opt.size}</span>
+                              </button>
+                            );
+                          })
+                      ) : (
+                        <span className="w-full px-4 py-3 text-center text-xs font-semibold uppercase tracking-[0.2em] text-zinc-400">
+                          Select a type to see sizes
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {isJarOption && availableLidColors.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Jar lid colour</p>
+                        <div className="flex w-full overflow-hidden rounded-full border border-[#e91e63] bg-[#fedae1] divide-x divide-[#e91e63]/30">
+                          {availableLidColors.map((color, index) => {
+                            const swatch = LID_COLOR_SWATCH[color] ?? color;
+                            const isActive = jarLidColor === color;
+                            return (
+                              <button
+                                key={color}
+                                type="button"
+                                data-segmented
+                                data-active={isActive ? "true" : "false"}
+                                onClick={() => setJarLidColor(color)}
+                                className="flex flex-1 items-center justify-center gap-3 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                              >
+                                <span
+                                  className="h-3.5 w-3.5 rounded-full border border-white/60"
+                                  style={{ backgroundColor: swatch }}
+                                  aria-hidden="true"
+                              />
+                              <span>{color.charAt(0).toUpperCase() + color.slice(1)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
+                      Quantity{selectedOption ? ` (max ${selectedOption.max_packages})` : ""}
+                    </p>
+                      <div className="flex w-full overflow-hidden rounded-full border border-zinc-200 bg-white">
+                        <input
+                          type="number"
+                          min={0}
+                          max={selectedOption?.max_packages}
+                          value={selectionQtyInput}
+                          onChange={(e) => setSelectionQtyInput(e.target.value)}
+                          className="w-full px-4 py-3 text-center text-base font-semibold text-zinc-900 outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+              </div>
+
+              <div className="flex min-h-[220px] h-full items-center justify-center rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+                <div className="aspect-square h-full w-full max-h-[360px]">
+                  {packagingImageUrl && !packagingImageFailed ? (
+                    <img
+                      src={packagingImageUrl}
+                      alt={`Packaging preview for ${selectionType} ${selectionSize}`}
+                      className="h-full w-full object-contain"
+                      loading="lazy"
+                      onError={() => setPackagingImageFailed(true)}
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">
+                      {packagingImageFailed || (selectedOptionId && categoryId)
+                        ? "Preview not available yet."
+                        : "Select packaging to preview."}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 w-full border-t border-zinc-200 pt-4">
+              <h3 className="text-lg font-semibold text-zinc-900">Labels</h3>
+              <div className="mt-3 space-y-3">
+                <div className="flex items-center gap-2 text-sm text-zinc-700">
                   <input
                     type="checkbox"
                     checked={labelsOptIn}
                     onChange={(e) => setLabelsOptIn(e.target.checked)}
                     className="rounded border-zinc-300"
                   />
-                  <span className="text-xs text-zinc-600">
-                    Add labels ({hasBulkSelection ? "manual count for bulk" : "matches packages"})
-                  </span>
+                  <span>Labels</span>
+                </div>
+                <div className="flex items-center gap-2 text-sm text-zinc-700">
+                  <input
+                    type="checkbox"
+                    checked={ingredientLabelsOptIn}
+                    onChange={(e) => setIngredientLabelsOptIn(e.target.checked)}
+                    className="rounded border-zinc-300"
+                  />
+                  <span>Ingredient labels</span>
                 </div>
                 {labelsOptIn && hasBulkSelection && (
                   <label className="block text-xs text-zinc-600">
@@ -460,143 +1357,174 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
                     />
                   </label>
                 )}
-                {labelsOptIn && !hasBulkSelection && (
-                  <p className="text-xs text-zinc-500">
-                    Labels will match total packages automatically for non-bulk packaging.
-                  </p>
+                {labelsOptIn && (
+                  <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700 space-y-2">
+                    <p>
+                      Take your order to the next level, the perfect finishing touch for weddings, events and branding.
+                      We will send label directly to printer and apply to packaging, please check artwork and size as we do
+                      not proof check. Contact us for more information admin@roccandy.com.au
+                    </p>
+                    <div>
+                      <p className="font-semibold">Artwork requirements</p>
+                      <p>Artwork to be PDF or JPG ready @ 300dpi colour or B&amp;W same price.</p>
+                    </div>
+                    <div>
+                      <p className="font-semibold">Artwork size to fit</p>
+                      <p>Jars: round 35mm x 35mm</p>
+                      <p>Bags: rectangle 46mm x 26mm</p>
+                    </div>
+                    <label className="block text-xs text-zinc-600">
+                      Upload label artwork (PDF or JPG, max 2MB)
+                      <input
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg"
+                        onChange={(e) => handleLabelUpload(e.target.files?.[0])}
+                        className="mt-1 w-full rounded border border-zinc-200 px-2 py-1"
+                      />
+                      {labelImageError && <span className="mt-1 block text-xs text-red-600">{labelImageError}</span>}
+                      {labelImageUrl && <span className="mt-1 block text-xs text-emerald-600">Label file ready.</span>}
+                    </label>
+                  </div>
                 )}
               </div>
             </div>
           </div>
-        )}
 
-        {/* Step 5: Candy design & flavor */}
-        {selectionQty > 0 && selectedOptionId && (
-          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Step 5</p>
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-zinc-900">Candy design & flavor</h3>
-                <p className="text-xs text-zinc-500">Preview updates live as you type.</p>
+          {/* Step 4: Candy design & flavor */}
+          <div
+            ref={designSectionRef}
+            className="relative overflow-visible rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm"
+          >
+          <div>
+            <h3 className="text-lg font-semibold text-zinc-900">Candy design & flavor</h3>
+          </div>
+          <div className="mt-4 grid gap-4 md:grid-cols-2 md:items-start">
+            <div
+              ref={previewWrapRef}
+              className="order-1 w-full md:order-2 md:flex md:h-[360px] md:items-center md:justify-center md:self-start"
+            >
+              <div ref={previewStickyRef} className="flex justify-center">
+                <CandyPreview
+                  designText={
+                    isWeddingInitials
+                      ? undefined
+                      : isText && !isBranded
+                        ? (customText || "").trim()
+                        : !isWedding && !isText && !isBranded
+                          ? designTitle || "Candy"
+                          : undefined
+                  }
+                  lineOne={
+                    isWedding
+                      ? isWeddingInitials
+                        ? (initialOne || "").trim().toUpperCase()
+                        : (nameOne || "").trim()
+                      : undefined
+                  }
+                  lineTwo={
+                    isWedding
+                      ? isWeddingInitials
+                        ? (initialTwo || "").trim().toUpperCase()
+                        : (nameTwo || "").trim()
+                      : undefined
+                  }
+                  mode={previewJacketMode}
+                  showPinstripe={previewShowPinstripe}
+                  colorOne={jacketColorOne}
+                  colorTwo={jacketColorTwo}
+                  showHeart={isWedding}
+                  logoUrl={isBranded ? logoUrl : undefined}
+                  heartColor={heartColor}
+                  textColor={textColor}
+                  isInitials={isWeddingInitials}
+                  dimensions={{ width: 420, height: 312 }}
+                />
               </div>
-              <CandyPreview
-                designText={
-                  isWeddingInitials
-                    ? undefined
-                    : isText && !isBranded
-                      ? (customText || "").trim()
-                      : !isWedding && !isText && !isBranded
-                        ? designTitle || "Candy"
-                        : undefined
-                }
-                lineOne={
-                  isWedding
-                    ? isWeddingInitials
-                      ? (initialOne || "").trim().toUpperCase()
-                      : (nameOne || "").trim()
-                    : undefined
-                }
-                lineTwo={
-                  isWedding
-                    ? isWeddingInitials
-                      ? (initialTwo || "").trim().toUpperCase()
-                      : (nameTwo || "").trim()
-                    : undefined
-                }
-                mode={previewJacketMode}
-                showPinstripe={previewShowPinstripe}
-                colorOne={jacketColorOne}
-                colorTwo={jacketColorTwo}
-                showHeart={isWedding}
-                logoUrl={isBranded ? logoUrl : undefined}
-                heartColor={heartColor}
-                textColor={textColor}
-                isInitials={isWeddingInitials}
-              />
             </div>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div className="order-2 md:order-1">
+              <div className="grid gap-3 md:grid-cols-2">
               {isWedding && (
                 <>
-                  <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                    First {isWeddingInitials ? "initial" : "name"}
-                    <input
-                      type="text"
-                      value={isWeddingInitials ? initialOne : nameOne}
-                      maxLength={isWeddingInitials ? 1 : 8}
-                      onChange={(e) =>
-                        isWeddingInitials
-                          ? setInitialOne((e.target.value || "").slice(0, 1))
-                          : setNameOne((e.target.value || "").slice(0, 8))
-                      }
-                      required
-                      className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                      placeholder={isWeddingInitials ? "A" : "Alex"}
-                    />
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-900">
+                      First {isWeddingInitials ? "initial" : "name"}
+                      <input
+                        type="text"
+                        value={isWeddingInitials ? initialOne : nameOne}
+                        maxLength={isWeddingInitials ? 1 : 8}
+                        onChange={(e) =>
+                          isWeddingInitials
+                            ? setInitialOne((e.target.value || "").slice(0, 1).toUpperCase())
+                            : setNameOne((e.target.value || "").slice(0, 8).toUpperCase())
+                        }
+                        required
+                        className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm uppercase"
+                        placeholder={isWeddingInitials ? "A" : "Andy"}
+                      />
                     {!isWeddingInitials && (
                       <div className="mt-1 text-right text-[11px] text-zinc-500">{`${(nameOne || "").length}/8`}</div>
                     )}
                   </label>
-                  <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                    Second {isWeddingInitials ? "initial" : "name"}
-                    <input
-                      type="text"
-                      value={isWeddingInitials ? initialTwo : nameTwo}
-                      maxLength={isWeddingInitials ? 1 : 8}
-                      onChange={(e) =>
-                        isWeddingInitials
-                          ? setInitialTwo((e.target.value || "").slice(0, 1))
-                          : setNameTwo((e.target.value || "").slice(0, 8))
-                      }
-                      required
-                      className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                      placeholder={isWeddingInitials ? "B" : "Sam"}
-                    />
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-900">
+                      Second {isWeddingInitials ? "initial" : "name"}
+                      <input
+                        type="text"
+                        value={isWeddingInitials ? initialTwo : nameTwo}
+                        maxLength={isWeddingInitials ? 1 : 8}
+                        onChange={(e) =>
+                          isWeddingInitials
+                            ? setInitialTwo((e.target.value || "").slice(0, 1).toUpperCase())
+                            : setNameTwo((e.target.value || "").slice(0, 8).toUpperCase())
+                        }
+                        required
+                        className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm uppercase"
+                        placeholder={isWeddingInitials ? "S" : "Sylvi"}
+                      />
                     {!isWeddingInitials && (
                       <div className="mt-1 text-right text-[11px] text-zinc-500">{`${(nameTwo || "").length}/8`}</div>
                     )}
                   </label>
                 </>
               )}
-              {isWedding && (
-                <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 flex items-center gap-2">
-                  Heart colour
-                  <input
-                    type="color"
-                    value={heartColor}
-                    onChange={(e) => setHeartColor(e.target.value)}
-                    className="h-8 w-12 cursor-pointer rounded border border-zinc-200 bg-white p-0"
-                  />
-                </label>
-              )}
-              <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 flex items-center gap-2">
-                Text colour
-                <input
-                  type="color"
-                  value={textColor}
-                  onChange={(e) => setTextColor(e.target.value)}
-                  className="h-8 w-12 cursor-pointer rounded border border-zinc-200 bg-white p-0"
-                />
-              </label>
-              {(isText || isBranded) && (
+                {isWedding && (
+                  <div className="md:col-span-2">
+                    <PalettePicker
+                      label="Heart colour"
+                      value={heartColor}
+                      onChange={setHeartColor}
+                      groups={paletteGroups}
+                      onCustom={() => openCustomPicker("heart", heartColor)}
+                    />
+                  </div>
+                )}
+              {isText && (
                 <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 md:col-span-2">
-                  {isBranded ? "Organisation name" : "Custom text"}
+                  Custom text
                   <input
                     type="text"
-                    value={isBranded ? orgName : customText}
-                    maxLength={isBranded ? undefined : maxCustomLength}
-                    onChange={(e) =>
-                      isBranded
-                        ? setOrgName(e.target.value)
-                        : setCustomText((e.target.value || "").slice(0, maxCustomLength))
-                    }
+                    value={customText}
+                    maxLength={maxCustomLength}
+                    onChange={(e) => setCustomText((e.target.value || "").slice(0, maxCustomLength))}
                     required
                     className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                    placeholder={isBranded ? "Acme Corp" : "Your text"}
+                    placeholder="Your text"
                   />
                 </label>
               )}
+              {!isBranded && (
+                <div className="md:col-span-2">
+                  <PalettePicker
+                    label="Text colour"
+                    value={textColor}
+                    onChange={setTextColor}
+                    groups={paletteGroups}
+                    onCustom={() => openCustomPicker("text", textColor)}
+                  />
+                </div>
+              )}
               <div className="md:col-span-2">
-                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Jacket type & colors</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-900">
+                    Jacket type & colors
+                  </p>
                 <div className="mt-2 flex flex-col gap-2 text-sm">
                   <label
                     className={`flex items-center gap-2 rounded-md border px-3 py-2 ${
@@ -650,396 +1578,403 @@ export function QuoteBuilder({ categories, packagingOptions, settings, flavors }
                     </span>
                   </label>
                   {!rainbowJacket && (
-                    <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-zinc-600">
-                      <div className="flex items-center gap-2">
-                        <span>Colour 1</span>
-                        <input type="color" value={jacketColorOne} onChange={(e) => setJacketColorOne(e.target.value)} />
-                      </div>
+                    <div className="mt-3 space-y-3">
+                      <PalettePicker
+                        label={showColourTwo ? "Jacket Colour 1" : "Jacket Colour"}
+                        value={jacketColorOne}
+                        onChange={setJacketColorOne}
+                        groups={paletteGroups}
+                        onCustom={() => openCustomPicker("jacket1", jacketColorOne)}
+                      />
                       {showColourTwo && (
-                        <div className="flex items-center gap-2">
-                          <span>Colour 2</span>
-                          <input type="color" value={jacketColorTwo} onChange={(e) => setJacketColorTwo(e.target.value)} />
-                        </div>
+                        <PalettePicker
+                          label="Jacket Colour 2"
+                          value={jacketColorTwo}
+                          onChange={setJacketColorTwo}
+                          groups={paletteGroups}
+                          onCustom={() => openCustomPicker("jacket2", jacketColorTwo)}
+                        />
                       )}
                     </div>
                   )}
                 </div>
               </div>
-              <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                Candy flavor*
-                <select
-                  value={flavor}
-                  onChange={(e) => setFlavor(e.target.value)}
-                  required
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                >
-                  <option value="">Select flavor</option>
-                  {flavors.map((f) => (
-                    <option key={f.id} value={f.name}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
               {isBranded && (
-                <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                  Logo file URL
-                  <input
-                    type="url"
-                    value={logoUrl}
-                    onChange={(e) => setLogoUrl(e.target.value)}
-                    required
-                    className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                    placeholder="Link to logo file"
-                  />
-                </label>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Step 6: Date & delivery */}
-        {selectionQty > 0 && selectedOptionId && (
-          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Step 6</p>
-            <h3 className="text-lg font-semibold text-zinc-900">Date & delivery</h3>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                Date required
-                <input
-                  type="date"
-                  value={dueDate}
-                  onChange={(e) => setDueDate(e.target.value)}
-                  required
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                />
-              </label>
-              <div className="space-y-2">
-                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Pickup or delivery</p>
-                <div className="flex gap-2 text-sm">
-                  <button
-                    type="button"
-                    onClick={() => setPickup(false)}
-                    className={`flex-1 rounded border px-2 py-1 font-semibold ${
-                      pickup ? "border-zinc-200 bg-white text-zinc-700" : "border-zinc-900 bg-zinc-900 text-white"
-                    }`}
-                  >
-                    Delivery
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPickup(true)}
-                    className={`flex-1 rounded border px-2 py-1 font-semibold ${
-                      pickup ? "border-zinc-900 bg-zinc-900 text-white" : "border-zinc-200 bg-white text-zinc-700"
-                    }`}
-                  >
-                    Pickup
-                  </button>
+                <div>
+                  <label htmlFor="logo-upload" className="text-xs uppercase tracking-[0.2em] text-zinc-500">
+                    Upload Your Design
+                  </label>
+                  <div className="mt-1">
+                    <input
+                      id="logo-upload"
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => handleLogoUpload(e.target.files?.[0] ?? null)}
+                      className="sr-only"
+                    />
+                    <label
+                      htmlFor="logo-upload"
+                      className="inline-flex cursor-pointer items-center rounded border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 hover:border-zinc-300"
+                    >
+                      Choose file (2mb max)
+                    </label>
+                  </div>
+                  {logoError && <p className="mt-1 text-xs text-red-600">{logoError}</p>}
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Step 7: Payment method */}
-        {selectionQty > 0 && selectedOptionId && (
-          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Step 7</p>
-            <h3 className="text-lg font-semibold text-zinc-900">Payment method</h3>
-            <div className="mt-3 flex flex-wrap gap-2 text-sm">
-              {["paypal", "apple_pay", "credit_card"].map((method) => (
-                <button
-                  key={method}
-                  type="button"
-                  onClick={() => setPaymentMethod(method)}
-                  className={`rounded border px-3 py-2 font-semibold ${
-                    paymentMethod === method
-                      ? "border-zinc-900 bg-zinc-900 text-white"
-                      : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300"
-                  }`}
-                >
-                  {method === "paypal" ? "PayPal" : method === "apple_pay" ? "Apple Pay" : "Credit card"}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Step 8: Contact & submission */}
-        {selectionQty > 0 && selectedOptionId && (
-          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Step 8</p>
-            <h3 className="text-lg font-semibold text-zinc-900">Your details</h3>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                First name*
-                <input
-                  type="text"
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  required
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                  placeholder="First name"
-                />
-              </label>
-              <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                Surname*
-                <input
-                  type="text"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                  required
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                  placeholder="Surname"
-                />
-              </label>
-              <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                Email address*
-                <input
-                  type="email"
-                  value={customerEmail}
-                  onChange={(e) => setCustomerEmail(e.target.value)}
-                  required
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                  placeholder="you@example.com"
-                />
-              </label>
-              <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                Phone number*
-                <input
-                  type="tel"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  required
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                  placeholder="Mobile or phone"
-                />
-              </label>
-              <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 md:col-span-2">
-                Organisation name
-                <input
-                  type="text"
-                  value={orgName}
-                  onChange={(e) => setOrgName(e.target.value)}
-                  className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                  placeholder="Optional"
-                />
-              </label>
-              {!pickup && (
-                <>
-                  <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 md:col-span-2">
-                    Address line 1*
-                    <input
-                      type="text"
-                      value={addressLine1}
-                      onChange={(e) => setAddressLine1(e.target.value)}
-                      required={!pickup}
-                      className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                      placeholder="Street address"
-                    />
-                  </label>
-                  <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 md:col-span-2">
-                    Address line 2
-                    <input
-                      type="text"
-                      value={addressLine2}
-                      onChange={(e) => setAddressLine2(e.target.value)}
-                      className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                      placeholder="Apartment, suite, etc. (optional)"
-                    />
-                  </label>
-                  <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                    Suburb or town*
-                    <input
-                      type="text"
-                      value={suburb}
-                      onChange={(e) => setSuburb(e.target.value)}
-                      required={!pickup}
-                      className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                      placeholder="Suburb or town"
-                    />
-                  </label>
-                  <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                    Postcode*
-                    <input
-                      type="text"
-                      value={postcode}
-                      onChange={(e) => setPostcode(e.target.value)}
-                      required={!pickup}
-                      className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                      placeholder="Postcode"
-                    />
-                  </label>
-                  <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                    State*
-                    <input
-                      type="text"
-                      value={stateValue}
-                      onChange={(e) => setStateValue(e.target.value)}
-                      required={!pickup}
-                      className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
-                      placeholder="e.g., Western Australia"
-                    />
-                  </label>
-                </>
               )}
             </div>
-            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="text-xs text-zinc-500">
-                Order weight will be saved as {(totalWeightKg * 1000).toFixed(0)} g.
+            </div>
+          </div>
+          <div className="mt-4">
+            <details ref={flavorDetailsRef} className="rounded-lg border border-zinc-200 bg-white px-3 py-2">
+              <summary className="flex cursor-pointer items-center gap-3 text-xs font-semibold text-zinc-700">
+                <span className="uppercase tracking-[0.2em] text-zinc-500">Candy flavor*</span>
+                <span className="ml-auto flex items-center gap-2 text-[11px] font-medium text-zinc-600">
+                  <span>{flavor || "Select flavor"}</span>
+                  {flavor ? (
+                    <span className="inline-flex h-6 w-6 p-0 text-sm text-zinc-600">
+                      <FlavorIcon
+                        name={flavor}
+                        cacheBust={flavorCacheBust}
+                        className="h-6 w-6 object-contain"
+                      />
+                    </span>
+                  ) : null}
+                </span>
+              </summary>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {flavors.map((f) => {
+                  const isActive = flavor === f.name;
+                  return (
+                    <button
+                      key={f.id}
+                      type="button"
+                      data-plain-button
+                      onClick={() => {
+                        setFlavor(f.name);
+                        if (flavorDetailsRef.current) {
+                          flavorDetailsRef.current.open = false;
+                        }
+                      }}
+                      aria-pressed={isActive}
+                      className="w-full text-left"
+                    >
+                      <span
+                        className={`flex items-center justify-between rounded-full border bg-white px-3 py-0 text-[11px] font-semibold uppercase tracking-[0.2em] transition ${
+                          isActive
+                            ? "border-zinc-900 text-zinc-900 ring-2 ring-zinc-900 ring-offset-1"
+                            : "border-zinc-200 text-zinc-600 hover:border-zinc-300"
+                        }`}
+                      >
+                        <span>{f.name}</span>
+                        <span className="ml-3 inline-flex h-12 w-12 items-center justify-center text-sm text-zinc-600">
+                          <FlavorIcon
+                            name={f.name}
+                            cacheBust={flavorCacheBust}
+                            className="h-full w-full object-contain"
+                          />
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
+            </details>
+          </div>
+        </div>
+
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <h3 className="text-lg font-semibold text-zinc-900">Ready to continue?</h3>
+            <p className="mt-2 text-sm text-zinc-600">
+              You can add delivery, payment, and contact details in the cart.
+            </p>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <button
                 type="button"
-                disabled={placing || !canPlace}
-                onClick={async () => {
+                onClick={() => {
                   setPlaceError(null);
-                  setPlaceSuccess(null);
-                  setPlacing(true);
-                  try {
-                    const title = designTitle;
-                    const description = selectedOption ? `${selectedOption.type} - ${selectedOption.size}` : "";
-                    const labelsCount = labelsOptIn
-                      ? hasBulkSelection
-                        ? labelCountOverride > 0
-                          ? Math.min(labelCountOverride, settings.labels_max_bulk)
-                          : 0
-                        : totalPackages
-                      : null;
-                    const res = await fetch("/api/orders", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        title,
-                        description,
-                        dateRequired: dueDate,
-                        pickup,
-                        state: stateValue || null,
-                        location: addressLine1 || null,
-                        customerName,
-                        customerEmail,
-                        firstName: customerName,
-                        lastName,
-                        phone,
-                        organizationName: orgName || null,
-                        addressLine1: addressLine1 || null,
-                        addressLine2: addressLine2 || null,
-                        suburb: suburb || null,
-                        postcode: postcode || null,
-                        categoryId,
-                        packagingOptionId: selectedOptionId,
-                        quantity: selectionQty,
-                        labelsCount,
-                        jacket: rainbowJacket ? "rainbow" : twoColourJacket ? "two_colour" : pinstripeJacket ? "pinstripe" : null,
-                        designType: categoryId || orderType,
-                        designText: title,
-                        jacketType: previewJacketMode,
-                        jacketColorOne,
-                        jacketColorTwo,
-                        jacketExtras: [
-                          ...(rainbowJacket ? [{ jacket: "rainbow" as const }] : []),
-                          ...(twoColourJacket ? [{ jacket: "two_colour" as const }] : []),
-                          ...(pinstripeJacket ? [{ jacket: "pinstripe" as const }] : []),
-                        ],
-                        flavor,
-                        paymentMethod,
-                        logoUrl: logoUrl || null,
-                        totalWeightKg,
-                        totalPrice: result?.total ?? null,
-                      }),
-                    });
-                    const data = await res.json();
-                    if (!res.ok) {
-                      throw new Error(data.error || "Unable to place order");
-                    }
-                    setPlaceSuccess("Order placed and sent to production schedule.");
-                  } catch (err) {
-                    const message = err instanceof Error ? err.message : "Unable to place order";
-                    setPlaceError(message);
-                  } finally {
-                    setPlacing(false);
+                  if (!canPlace) {
+                    const missingText = missingFields.length ? missingFields.join(", ") : "required fields";
+                    setPlaceError(`Please complete: ${missingText}.`);
+                    return;
                   }
+                  setPlacing(true);
+                  const title = designTitle;
+                  const description = selectedOption ? `${selectedOption.type} - ${selectedOption.size}` : "";
+                  const labelsCount = labelsOptIn
+                    ? hasBulkSelection
+                      ? labelCountOverride > 0
+                        ? Math.min(labelCountOverride, settings.labels_max_bulk)
+                        : 0
+                      : totalPackages
+                    : null;
+                  const jacketValue = rainbowJacket
+                    ? "rainbow"
+                    : twoColourJacket && pinstripeJacket
+                      ? "two_colour_pinstripe"
+                      : twoColourJacket
+                        ? "two_colour"
+                        : pinstripeJacket
+                          ? "pinstripe"
+                          : null;
+                  const jacketExtras = [
+                    ...(rainbowJacket ? [{ jacket: "rainbow" as const }] : []),
+                    ...(twoColourJacket ? [{ jacket: "two_colour" as const }] : []),
+                    ...(pinstripeJacket ? [{ jacket: "pinstripe" as const }] : []),
+                  ];
+                  addCustomItem({
+                    title: title || mainTitle,
+                    description,
+                    categoryId,
+                    packagingOptionId: selectedOptionId,
+                    totalPrice: result?.total ?? null,
+                    totalWeightKg,
+                    quantity: selectionQty,
+                    packagingLabel: description,
+                    jarLidColor: isJarOption ? jarLidColor || null : null,
+                    labelsCount,
+                    labelImageUrl: labelsOptIn ? labelImageUrl || null : null,
+                    ingredientLabelsOptIn,
+                    jacket: jacketValue,
+                    jacketType: previewJacketMode || null,
+                    jacketColorOne,
+                    jacketColorTwo,
+                    textColor: isBranded ? null : textColor,
+                    heartColor: isWedding ? heartColor : null,
+                    flavor,
+                    logoUrl: logoUrl || null,
+                    designType: categoryId || orderType,
+                    designText: title || mainTitle,
+                    jacketExtras,
+                  });
+                  router.push("/checkout");
                 }}
+                aria-disabled={!canPlace || placing}
                 className={`inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-semibold shadow-sm ${
-                  placing ||
-                  !result ||
-                  !dueDate ||
-                  !flavor ||
-                  !paymentMethod ||
-                  !customerName ||
-                  !lastName ||
-                  !customerEmail ||
-                  !phone ||
-                  (orderType === "weddings" &&
-                    (selectionType.includes("initials") ? (!initialOne || !initialTwo) : (!nameOne || !nameTwo))) ||
-                  (orderType === "text" && !customText) ||
-                  (orderType === "branded" && (!orgName || !logoUrl)) ||
-                  (!pickup && (!addressLine1 || !suburb || !postcode || !stateValue))
+                  placing
                     ? "cursor-not-allowed border border-zinc-200 bg-zinc-100 text-zinc-500"
-                    : "border border-zinc-900 bg-zinc-900 text-white hover:bg-zinc-800"
+                    : canPlace
+                      ? "border border-zinc-900 bg-zinc-900 text-white hover:bg-zinc-800"
+                      : "border border-zinc-200 bg-zinc-100 text-zinc-500 hover:border-zinc-300"
                 }`}
               >
-                {placing ? "Placing..." : "Place order"}
+                {placing ? "Adding..." : "Continue to cart"}
               </button>
             </div>
             {placeError && <p className="mt-2 text-xs text-red-600">{placeError}</p>}
-            {placeSuccess && <p className="mt-2 text-xs text-emerald-600">{placeSuccess}</p>}
           </div>
-        )}
-      </div>
+        </div>
 
-      {/* Price sidebar */}
-      <div className="fixed right-6 top-24 w-80 shrink-0">
-        <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm shadow-lg">
-          <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Price</p>
-          {result ? (
-            <div className="mt-2 space-y-2">
-              {(() => {
-                const subtotal = Math.max(0, result.total - result.transactionFee);
-                return (
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-3xl font-semibold">${subtotal.toFixed(2)}</p>
-                      <p className="text-xs text-zinc-500">Excludes transaction fee</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowBreakdown((prev) => !prev)}
-                      className="rounded border border-zinc-300 px-2 py-1 text-xs font-semibold text-zinc-700 hover:border-zinc-400"
-                    >
-                      {showBreakdown ? "Hide breakdown" : "Show breakdown"}
-                    </button>
+      </div>
+      
+
+      {customPickerOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-zinc-900/40 px-4">
+          <div
+            className="w-full max-w-xl rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+          >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-zinc-900">Set a brand color</h3>
                   </div>
-                );
-              })()}
-              {showBreakdown && (
-                <div className="space-y-1 text-sm text-zinc-700">
-                  {result.items.map((item: QuoteItem) => (
-                    <div key={item.label} className="flex justify-between border-b border-zinc-100 pb-1">
-                      <span>{item.label}</span>
-                      <span>${item.amount.toFixed(2)}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCustomPickerOpen(false)}
+                    data-plain-button
+                    className="rounded-full px-2 py-1 text-lg font-semibold text-zinc-600"
+                    aria-label="Close"
+                  >
+                    ?
+                  </button>
+                </div>
+                <div className="mt-4 grid gap-4 md:grid-cols-[1fr_1.2fr] md:items-start">
+                  <label
+                    htmlFor="custom-color-picker"
+                    className="text-xs uppercase tracking-[0.2em] text-zinc-500"
+                  >
+                    Click here
+                  </label>
+                  <div className="md:col-start-1 md:row-start-2">
+                    <input
+                      id="custom-color-picker"
+                      type="color"
+                      value={customHex}
+                      onChange={(event) => {
+                        const next = normalizeHex(event.target.value, customHex);
+                        setCustomHex(next);
+                        setCustomHexInput(next);
+                        const nextCmyk = hexToCmyk(next);
+                        if (nextCmyk) setCustomCmyk(nextCmyk);
+                        const nextRgba = hexToRgba(next, customRgba.a);
+                        if (nextRgba) setCustomRgba(nextRgba);
+                      }}
+                      className="h-24 w-full cursor-pointer rounded-lg border border-zinc-200 bg-white p-0"
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-start-2 md:row-start-2">
+                    <div className="flex w-full overflow-hidden rounded-2xl border border-[#e91e63] bg-[#fedae1] divide-x divide-[#e91e63]/30">
+                      <button
+                        type="button"
+                        data-segmented
+                        data-active={customInputMode === "hex" ? "true" : "false"}
+                        onClick={() => setCustomInputMode("hex")}
+                        className="flex-1 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                      >
+                        Hex
+                      </button>
+                      <button
+                        type="button"
+                        data-segmented
+                        data-active={customInputMode === "cmyk" ? "true" : "false"}
+                        onClick={() => {
+                          setCustomInputMode("cmyk");
+                          const next = hexToCmyk(normalizeHex(customHex, defaultJacketColor));
+                          if (next) setCustomCmyk(next);
+                        }}
+                        className="flex-1 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                      >
+                        CMYK
+                      </button>
+                      <button
+                        type="button"
+                        data-segmented
+                        data-active={customInputMode === "rgba" ? "true" : "false"}
+                        onClick={() => {
+                          setCustomInputMode("rgba");
+                          const next = hexToRgba(normalizeHex(customHex, defaultJacketColor), customRgba.a);
+                          if (next) setCustomRgba(next);
+                        }}
+                        className="flex-1 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                      >
+                        RGB
+                      </button>
                     </div>
-                  ))}
-                  <div className="mt-1 border-t border-zinc-200 pt-1 text-zinc-700">
-                    <div className="flex justify-between text-xs">
-                      <span>Total with fee</span>
-                      <span>${result.total.toFixed(2)}</span>
-                    </div>
+                    {customInputMode === "hex" ? (
+                      <div className="space-y-2">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-400">Hex</div>
+                        <input
+                          type="text"
+                          value={customHexInput}
+                          onChange={(event) => {
+                            const next = sanitizeHexInput(event.target.value);
+                            setCustomHexInput(next);
+                            const normalized = parseHexInput(next);
+                            if (normalized) {
+                              setCustomHex(normalized);
+                              const nextCmyk = hexToCmyk(normalized);
+                              if (nextCmyk) setCustomCmyk(nextCmyk);
+                              const nextRgba = hexToRgba(normalized, customRgba.a);
+                              if (nextRgba) setCustomRgba(nextRgba);
+                            }
+                          }}
+                          onBlur={(event) => {
+                            const normalized = parseHexInput(event.target.value);
+                            if (normalized) {
+                              setCustomHex(normalized);
+                              setCustomHexInput(normalized);
+                              const nextCmyk = hexToCmyk(normalized);
+                              if (nextCmyk) setCustomCmyk(nextCmyk);
+                              const nextRgba = hexToRgba(normalized, customRgba.a);
+                              if (nextRgba) setCustomRgba(nextRgba);
+                            } else {
+                              setCustomHexInput(customHex);
+                            }
+                          }}
+                          placeholder="#RRGGBB"
+                          aria-label="Hex"
+                          className="w-full rounded border border-zinc-200 px-2 py-1 text-xs font-medium uppercase tracking-[0.08em]"
+                        />
+                      </div>
+                    ) : customInputMode === "cmyk" ? (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-4 gap-2 text-[10px] uppercase tracking-[0.2em] text-zinc-400">
+                          <span>C</span>
+                          <span>M</span>
+                          <span>Y</span>
+                          <span>K</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-2">
+                          {(["c", "m", "y", "k"] as const).map((key) => (
+                            <input
+                              key={key}
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={customCmyk[key]}
+                              onChange={(event) => {
+                              const nextValue = clampChannel(Number(event.target.value));
+                              const next = { ...customCmyk, [key]: nextValue };
+                              setCustomCmyk(next);
+                              const nextHex = cmykToHex(next);
+                              setCustomHex(nextHex);
+                              setCustomHexInput(nextHex);
+                              const nextRgba = hexToRgba(nextHex, customRgba.a);
+                              if (nextRgba) setCustomRgba(nextRgba);
+                            }}
+                            aria-label={`CMYK ${key.toUpperCase()}`}
+                            className="rounded border border-zinc-200 px-2 py-1 text-xs"
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                      <div className="grid grid-cols-3 gap-2 text-[10px] uppercase tracking-[0.2em] text-zinc-400">
+                        <span>R</span>
+                        <span>G</span>
+                        <span>B</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {(["r", "g", "b"] as const).map((key) => (
+                          <input
+                            key={key}
+                              type="number"
+                              min={0}
+                              max={255}
+                              value={customRgba[key]}
+                              onChange={(event) => {
+                              const nextValue = clampByte(Number(event.target.value));
+                              const next = { ...customRgba, [key]: nextValue };
+                              setCustomRgba(next);
+                              const nextHex = rgbaToHex(next);
+                              setCustomHex(nextHex);
+                              setCustomHexInput(nextHex);
+                              const nextCmyk = hexToCmyk(nextHex);
+                              if (nextCmyk) setCustomCmyk(nextCmyk);
+                            }}
+                            aria-label={`RGB ${key.toUpperCase()}`}
+                            className="rounded border border-zinc-200 px-2 py-1 text-xs"
+                          />
+                        ))}
+                      </div>
+                      </div>
+                    )}
                   </div>
                 </div>
-              )}
-              <div className="text-xs text-zinc-500">
-                <p>Total weight: {result.totalWeightKg.toFixed(2)} kg</p>
-              </div>
+            <div className="mt-5 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomPickerOpen(false)}
+                  data-neutral-button
+                  className="rounded-md px-4 py-2 text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+              <button
+                type="button"
+                onClick={applyCustomColor}
+                className="rounded-md border border-zinc-900 bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800"
+              >
+                Use this colour
+              </button>
             </div>
-          ) : (
-            <p className="mt-2 text-sm text-zinc-500">
-              {loading ? "Calculating..." : "Select packaging to see price"}
-            </p>
-          )}
-          {loading && <p className="mt-2 text-xs text-zinc-500">Updating…</p>}
-          {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
+
+

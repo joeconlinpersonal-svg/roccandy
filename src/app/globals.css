@@ -8,8 +8,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-body);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,5 +22,130 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-body), sans-serif;
+}
+
+:root .landing-bg {
+  position: relative;
+  isolation: isolate;
+  background-color: #fff7f0;
+}
+
+:root .landing-bg::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-color: #fff7f0;
+  background-image: url("/landing/hero-bg.webp");
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center top;
+  pointer-events: none;
+  backface-visibility: hidden;
+}
+
+
+:is(h1, h2, h3, h4, h5, h6, button, label, summary, nav, th, thead, legend),
+.uppercase {
+  font-family: var(--font-heading), sans-serif;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgba(24, 24, 27, 0.15);
+}
+
+:where(.nav-dropdown)::marker,
+:where(.nav-dropdown)::before {
+  content: "";
+}
+
+.nav-dropdown::-webkit-details-marker {
+  display: none;
+}
+
+@layer base {
+  body:not([data-admin="true"]) button[data-segmented] {
+    background-color: #ffffff !important;
+    color: #e91e63 !important;
+  }
+
+  body:not([data-admin="true"]) button[data-segmented][data-active="true"] {
+    background-color: #fbd6e3 !important;
+    color:  #e91e63 !important;
+  }
+
+  body[data-admin="true"] button[data-segmented] {
+    background-color: #ffffff !important;
+    color: #e91e63 !important;
+  }
+
+  body[data-admin="true"] button[data-segmented][data-active="true"] {
+    background-color: #fbd6e3 !important;
+    color: #e91e63 !important;
+  }
+
+  body:not([data-admin="true"]) [data-plain-button],
+  [data-plain-button] {
+    background-color: transparent !important;
+    border: 0 !important;
+    color: inherit !important;
+    padding: 0 !important;
+    cursor: pointer;
+  }
+
+  body:not([data-admin="true"]) [data-neutral-button],
+  [data-neutral-button] {
+    background-color: #ffffff !important;
+    border: 1px solid #d4d4d8 !important;
+    color: #52525b !important;
+  }
+
+.palette-swatch {
+  background-color: var(--swatch) !important;
+  border-color: var(--swatch-border, #000000) !important;
+  color: inherit !important;
+}
+
+:is(h1, h2, h3, h4, h5, h6) {
+  text-transform: uppercase;
+}
+}
+
+@media (max-width: 768px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0%);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  animation: marquee 15s linear infinite;
+}
+
+@keyframes toast-pop {
+  0% {
+    transform: scale(0.9);
+  }
+  60% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.toast-pop {
+  animation: toast-pop 500ms ease-out;
 }

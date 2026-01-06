@@ -1,4 +1,4 @@
-import { getCategories, getPackagingOptions } from "@/lib/data";
+import { getCategories, getPackagingOptionImages, getPackagingOptions, getSettings } from "@/lib/data";
 import { PackagingTable } from "./PackagingTable";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -14,20 +14,28 @@ export default async function PackagingPage() {
     redirect("/admin/login");
   }
 
-  const [options, categories] = await Promise.all([getPackagingOptions(), getCategories()]);
+  const [options, categories, images, settings] = await Promise.all([
+    getPackagingOptions(),
+    getCategories(),
+    getPackagingOptionImages(),
+    getSettings(),
+  ]);
 
   return (
     <section className="space-y-6">
       <div className="space-y-2">
         <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Admin / Packaging</p>
         <h2 className="text-3xl font-semibold">Packaging options</h2>
-        <p className="text-sm text-zinc-600">
-          View or edit packaging rows. Allowed categories are comma-separated IDs (e.g.,
-          weddings-initials,custom-1-6). Max packages is the cap per order.
-        </p>
+        <p className="text-sm text-zinc-600">Add or update packaging options in the table below.</p>
+        <p className="text-sm text-zinc-600">Scroll down to upload or replace images for each packaging combination.</p>
       </div>
 
-      <PackagingTable options={options} categories={categories} />
+      <PackagingTable
+        options={options}
+        categories={categories}
+        images={images}
+        maxTotalKg={Number(settings?.max_total_kg ?? 0)}
+      />
     </section>
   );
 }

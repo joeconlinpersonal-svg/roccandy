@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { LabelRange, SettingsRow } from "@/lib/data";
 import { deleteLabelRange, upsertLabelRange, updateLabelSettings } from "./actions";
 
@@ -14,7 +14,6 @@ export function LabelsTable({ ranges, settings }: Props) {
   const sorted = [...ranges].sort((a, b) => a.upper_bound - b.upper_bound);
   const [shipping, setShipping] = useState(settings.labels_supplier_shipping);
   const [markup, setMarkup] = useState(settings.labels_markup_multiplier);
-  const [leadTime, setLeadTime] = useState(settings.lead_time_days);
   const [dirtyRangeIds, setDirtyRangeIds] = useState<Set<string>>(new Set());
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [newDirty, setNewDirty] = useState(false);
@@ -28,7 +27,6 @@ export function LabelsTable({ ranges, settings }: Props) {
     () => ({
       shipping: settings.labels_supplier_shipping,
       markup: settings.labels_markup_multiplier,
-      lead: settings.lead_time_days,
     }),
     [settings]
   );
@@ -105,9 +103,7 @@ export function LabelsTable({ ranges, settings }: Props) {
                 onChange={(e) => {
                   setShipping(Number(e.target.value));
                   const next = Number(e.target.value);
-                  setSettingsDirty(
-                    next !== originalSettings.shipping || markup !== originalSettings.markup || leadTime !== originalSettings.lead
-                  );
+                  setSettingsDirty(next !== originalSettings.shipping || markup !== originalSettings.markup);
                 }}
                 className="rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-900"
               />
@@ -127,7 +123,7 @@ export function LabelsTable({ ranges, settings }: Props) {
                   const next = Number(e.target.value);
                   setMarkup(next);
                   setSettingsDirty(
-                    shipping !== originalSettings.shipping || next !== originalSettings.markup || leadTime !== originalSettings.lead
+                    shipping !== originalSettings.shipping || next !== originalSettings.markup
                   );
                 }}
                 className="rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-900"
@@ -137,27 +133,6 @@ export function LabelsTable({ ranges, settings }: Props) {
                 <span className="text-sm font-semibold text-zinc-900">{markup.toFixed(2)}x</span>
                 <span className="text-xs text-zinc-500">(+{((markup - 1) * 100).toFixed(0)}%)</span>
               </div>
-            )}
-          </label>
-          <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.2em] text-zinc-500">
-            Urgency fee period (days)
-            {editMode ? (
-              <input
-                type="number"
-                step="1"
-                name="lead_time_days"
-                value={leadTime}
-                onChange={(e) => {
-                  const next = Number(e.target.value);
-                  setLeadTime(next);
-                  setSettingsDirty(
-                    shipping !== originalSettings.shipping || markup !== originalSettings.markup || next !== originalSettings.lead
-                  );
-                }}
-                className="rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-900"
-              />
-            ) : (
-              <span className="text-sm font-semibold text-zinc-900">{settings.lead_time_days} days</span>
             )}
           </label>
         </form>

@@ -1,0 +1,1320 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { AddPremadeToCartButton } from "@/components/AddPremadeToCartButton";
+import { useCart, type CartItem, type CustomCartItem, type PremadeCartItem } from "@/components/CartProvider";
+import { CandyPreview } from "@/app/quote/CandyPreview";
+import { paletteSections } from "@/app/admin/settings/palette";
+import type { ColorPaletteRow, QuoteBlock } from "@/lib/data";
+
+type PremadeSuggestion = {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  weight_g: number;
+  weightLabel: string;
+  imageUrl: string;
+  approx_pcs: number | null;
+};
+
+type PricingBreakdown = {
+  basePrice: number;
+  packagingPrice: number;
+  labelsPrice: number;
+  extrasPrice: number;
+  urgencyFee: number;
+  transactionFee: number;
+  total: number;
+  totalWeightKg: number;
+  items: Array<{ label: string; amount: number }>;
+};
+
+type Props = {
+  suggestions: PremadeSuggestion[];
+  palette: ColorPaletteRow[];
+  quoteBlocks: QuoteBlock[];
+  urgencyFeePercent: number;
+  urgencyPeriodDays: number;
+  transactionFeePercent: number;
+};
+
+const AU_STATES = [
+  { value: "ACT", label: "ACT" },
+  { value: "NSW", label: "NSW" },
+  { value: "NT", label: "NT" },
+  { value: "QLD", label: "QLD" },
+  { value: "SA", label: "SA" },
+  { value: "TAS", label: "TAS" },
+  { value: "VIC", label: "VIC" },
+  { value: "WA", label: "WA" },
+];
+
+const PAYMENT_METHODS = ["PayPal", "Apple Pay", "Credit card"];
+
+function formatMoney(value: number) {
+  return `$${value.toFixed(2)}`;
+}
+
+function formatWeight(weight_g: number) {
+  if (!Number.isFinite(weight_g)) return "";
+  if (weight_g >= 1000) {
+    const kg = weight_g / 1000;
+    return `${kg % 1 === 0 ? kg.toFixed(0) : kg.toFixed(1)}kg`;
+  }
+  return `${weight_g}g`;
+}
+
+function formatPackagingLabel(label?: string | null) {
+  if (!label) return "Packaging";
+  const parts = label.split(/\s+-\s+/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length > 1) return parts.join(" ");
+  return label.replace(/\s+/g, " ").trim();
+}
+
+type QuoteOrderRef = {
+  id?: string | null;
+  orderNumber?: string | null;
+  title?: string | null;
+};
+
+function buildQuoteOrderLabel(orders: QuoteOrderRef[]) {
+  const labels = orders
+    .map((order) => {
+      if (order.orderNumber) return `#${order.orderNumber}`;
+      const title = order.title?.trim();
+      if (title) return title;
+      const id = order.id?.trim();
+      return id ? `#${id.slice(0, 8)}` : "";
+    })
+    .filter(Boolean);
+  const uniqueLabels = Array.from(new Set(labels));
+  if (uniqueLabels.length === 0) return "";
+  return `Quote order${uniqueLabels.length > 1 ? "s" : ""}: ${uniqueLabels.join(", ")}`;
+}
+
+const isDateBlocked = (dateKey: string, blocks: QuoteBlock[]) => {
+  return blocks.some((block) => dateKey >= block.start_date && dateKey <= block.end_date);
+};
+
+const dayLabelClass = "text-[10px] uppercase tracking-[0.2em] text-zinc-400";
+
+const buildDateKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const formatMonthLabel = (date: Date) =>
+  date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+async function fetchOrderNumber() {
+  const response = await fetch("/api/orders/number");
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "Unable to generate order number");
+  }
+  const data = (await response.json()) as { orderNumber?: string };
+  if (!data.orderNumber) {
+    throw new Error("Order number missing");
+  }
+  return data.orderNumber;
+}
+
+function normalizeHex(value: string) {
+  const trimmed = value.trim();
+  if (!/^#?[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed;
+  return trimmed.startsWith("#") ? trimmed.toLowerCase() : `#${trimmed.toLowerCase()}`;
+}
+
+function buildPaletteLabelMap(palette: ColorPaletteRow[]) {
+  const labelMap = new Map<string, string>();
+  paletteSections.forEach((section) => {
+    section.items.forEach((item) => {
+      const match = palette.find((row) => row.category === item.categoryKey && row.shade === item.shadeKey);
+      const hex = normalizeHex(match?.hex ?? item.defaultValue);
+      if (hex.startsWith("#")) {
+        labelMap.set(hex, item.label);
+      }
+    });
+  });
+  return labelMap;
+}
+
+function formatJacketLabel(item: CustomCartItem) {
+  const jacketValue = item.jacket || item.jacketType;
+  if (!jacketValue) return "Single colour";
+  if (jacketValue === "two_colour_pinstripe") return "Two colour + Pinstripe";
+  if (jacketValue === "two_colour") return "Two colour";
+  if (jacketValue === "pinstripe") return "Pinstripe";
+  if (jacketValue === "rainbow") return "Rainbow";
+  return jacketValue.replace(/_/g, " ");
+}
+
+function splitWeddingNames(value?: string | null) {
+  const safe = (value || "").trim();
+  if (!safe) return { lineOne: "", lineTwo: "" };
+  const heartSplit = safe.split(/\s*\u2764\uFE0F?\s*/);
+  if (heartSplit.length >= 2) {
+    return { lineOne: heartSplit[0].trim(), lineTwo: heartSplit.slice(1).join(" ").trim() };
+  }
+  const altSplit = safe.split(/\s*&\s*|\s*\+\s*/);
+  if (altSplit.length >= 2) {
+    return { lineOne: altSplit[0].trim(), lineTwo: altSplit.slice(1).join(" ").trim() };
+  }
+  return { lineOne: safe, lineTwo: "" };
+}
+
+function formatColorValue(value: string | null | undefined, paletteMap?: Map<string, string>) {
+  if (!value) return "";
+  const normalized = normalizeHex(value);
+  if (!normalized.startsWith("#")) {
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+  const label = paletteMap?.get(normalized);
+  if (label) return label;
+  return `Custom (${normalized.toUpperCase()})`;
+}
+
+function formatColorList(values: Array<string | null | undefined>, paletteMap?: Map<string, string>) {
+  const parts = values.map((value) => formatColorValue(value, paletteMap)).filter(Boolean);
+  return parts.join(" / ");
+}
+
+function CartItemRow({
+  item,
+  onRemove,
+  onQuantityChange,
+  pricing,
+  dueDate,
+  paletteMap,
+}: {
+  item: CartItem;
+  onRemove: () => void;
+  onQuantityChange?: (qty: number) => void;
+  pricing?: PricingBreakdown;
+  dueDate?: string;
+  paletteMap?: Map<string, string>;
+}) {
+  if (item.type === "premade") {
+    return (
+      <div className="flex flex-wrap items-center gap-4 rounded-xl border border-zinc-200 bg-white p-3">
+        {item.imageUrl ? (
+          <img
+            src={item.imageUrl}
+            alt={item.name}
+            className="h-16 w-16 rounded-lg border border-zinc-200 object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <div className="h-16 w-16 rounded-lg border border-zinc-200 bg-zinc-50" />
+        )}
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-zinc-900">{item.name}</p>
+          <p className="text-xs text-zinc-500">{formatWeight(item.weight_g)}</p>
+          <p className="text-sm font-semibold text-zinc-900">{formatMoney(item.price)}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            value={item.quantity}
+            onChange={(event) => onQuantityChange?.(Number(event.target.value))}
+            className="w-16 rounded border border-zinc-200 px-2 py-1 text-sm"
+            aria-label={`Quantity for ${item.name}`}
+          />
+          <button
+            type="button"
+            data-neutral-button
+            onClick={onRemove}
+            className="rounded-md px-3 py-1 text-xs font-semibold"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const packagingLine = item.packagingLabel
+    ? `${item.quantity} x ${formatPackagingLabel(item.packagingLabel)}`
+    : `Qty ${item.quantity}`;
+  const designKey = item.categoryId || item.designType || "";
+  const isWeddingInitials = designKey === "weddings-initials";
+  const isWeddingNames = designKey === "weddings-both-names";
+  const isWedding = isWeddingInitials || isWeddingNames;
+  const isBranded = designKey === "branded";
+  const designValue = item.designText || item.title;
+  const { lineOne, lineTwo } = isWedding ? splitWeddingNames(designValue) : { lineOne: "", lineTwo: "" };
+  const jacketLabel = formatJacketLabel(item);
+  const rawJacketValue = item.jacket || item.jacketType || "";
+  const usesTwoColours = rawJacketValue === "two_colour" || rawJacketValue === "two_colour_pinstripe";
+  const jacketColorsValue = formatColorList(
+    usesTwoColours ? [item.jacketColorOne, item.jacketColorTwo] : [item.jacketColorOne],
+    paletteMap
+  );
+  const jacketColorsDisplay = jacketLabel === "Rainbow" ? "Rainbow" : jacketColorsValue;
+  const textColorValue = formatColorValue(item.textColor, paletteMap);
+  const heartColorValue = formatColorValue(item.heartColor, paletteMap);
+  const labelsValue =
+    item.labelsCount != null ? `${item.labelsCount}` : item.labelImageUrl ? "Yes" : "No";
+  const ingredientLabelsValue = item.ingredientLabelsOptIn ? "Yes" : "No";
+  const labelSummary = `${labelsValue} / ${ingredientLabelsValue}`;
+  const previewMode =
+    rawJacketValue === "rainbow"
+      ? "rainbow"
+      : rawJacketValue === "pinstripe"
+        ? "pinstripe"
+        : rawJacketValue === "two_colour" || rawJacketValue === "two_colour_pinstripe"
+          ? "two_colour"
+          : "";
+  const previewShowPinstripe = rawJacketValue === "pinstripe" || rawJacketValue === "two_colour_pinstripe";
+  const previewDesignText = isWedding ? undefined : designValue || undefined;
+  const previewLineOne = isWedding ? (isWeddingInitials ? lineOne.toUpperCase() : lineOne) : undefined;
+  const previewLineTwo = isWedding ? (isWeddingInitials ? lineTwo.toUpperCase() : lineTwo) : undefined;
+  const previewLogoUrl = isBranded ? item.logoUrl : undefined;
+  const detailRows = [
+    { label: "Title", value: item.title },
+    { label: "Packaging", value: packagingLine },
+    { label: "Jacket type", value: jacketLabel },
+    { label: "Jacket colours", value: jacketColorsDisplay },
+    { label: "Text colour", value: textColorValue },
+    { label: "Heart colour", value: heartColorValue },
+    { label: "Flavour", value: item.flavor || "" },
+    { label: "Label / Ingredient Label", value: labelSummary },
+  ].filter((detail) => detail.value !== "");
+
+  const handleRemove = () => {
+    if (item.type === "custom") {
+      const confirmed = window.confirm("Remove this custom order from the cart?");
+      if (!confirmed) return;
+    }
+    onRemove();
+  };
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-3">
+      <div className="flex items-start justify-end">
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-semibold text-zinc-900">
+            {pricing?.total
+              ? formatMoney(pricing.total)
+              : item.totalPrice
+                ? formatMoney(item.totalPrice)
+                : "Price pending"}
+          </p>
+          <button
+            type="button"
+            data-neutral-button
+            onClick={handleRemove}
+            className="rounded-md px-3 py-1 text-xs font-semibold"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-4">
+        <div className="space-y-2 text-xs text-zinc-600">
+          {detailRows.map((detail) => (
+            <div key={detail.label} className="flex items-start justify-between gap-3">
+              <span className="text-zinc-500">{detail.label}</span>
+              <span className="text-right text-zinc-800">{detail.value}</span>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center justify-center rounded-lg border border-zinc-200 bg-white p-2">
+          <CandyPreview
+            designText={previewDesignText}
+            lineOne={previewLineOne}
+            lineTwo={previewLineTwo}
+            showHeart={isWedding}
+            mode={previewMode}
+            showPinstripe={previewShowPinstripe}
+            colorOne={item.jacketColorOne || ""}
+            colorTwo={item.jacketColorTwo || ""}
+            logoUrl={previewLogoUrl}
+            textColor={item.textColor || undefined}
+            heartColor={item.heartColor || undefined}
+            isInitials={isWeddingInitials}
+            dimensions={{ width: 240, height: 180 }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PremadeCarousel({ items }: { items: PremadeSuggestion[] }) {
+  const pageSize = 4;
+  const pages = useMemo(() => {
+    const chunks: PremadeSuggestion[][] = [];
+    for (let i = 0; i < items.length; i += pageSize) {
+      chunks.push(items.slice(i, i + pageSize));
+    }
+    return chunks;
+  }, [items]);
+  const [page, setPage] = useState(0);
+
+  if (!items.length) {
+    return (
+      <div className="rounded-2xl border border-zinc-200 bg-white/90 p-6 text-center text-sm text-zinc-600 shadow-sm">
+        No recommendations available yet.
+      </div>
+    );
+  }
+
+  const canScroll = pages.length > 1;
+
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        type="button"
+        data-neutral-button
+        disabled={!canScroll}
+        onClick={() => setPage((current) => (current - 1 + pages.length) % pages.length)}
+        className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white/90 text-xl font-semibold text-zinc-600 shadow-sm transition hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Previous recommendations"
+      >
+        {"<"}
+      </button>
+      <div className="flex-1 overflow-hidden">
+        <div
+          className="flex transition-transform duration-500 ease-out"
+          style={{ transform: `translateX(-${page * 100}%)` }}
+        >
+          {pages.map((pageItems, index) => (
+            <div key={`page-${index}`} className="min-w-full grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+              {pageItems.map((item) => (
+                <article
+                  key={item.id}
+                  className="flex h-full flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white/90 shadow-sm"
+                >
+                  <div className="relative aspect-[4/3] w-full overflow-hidden bg-zinc-100">
+                    {item.imageUrl ? (
+                      <img
+                        src={item.imageUrl}
+                        alt={item.name}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                      />
+                    ) : null}
+                    <AddPremadeToCartButton
+                      className="absolute right-2 top-2"
+                      item={{
+                        premadeId: item.id,
+                        name: item.name,
+                        price: item.price,
+                        weight_g: item.weight_g,
+                        imageUrl: item.imageUrl,
+                      }}
+                    />
+                  </div>
+                  <div className="flex flex-1 flex-col gap-1.5 px-4 py-3 text-center">
+                    <p className="text-sm font-bold text-[#e91e63]">{`${item.weightLabel} ${item.name}`}</p>
+                    <p className="text-xl font-semibold text-zinc-900">{formatMoney(item.price)}</p>
+                    <p className="text-sm text-zinc-500">{item.description}</p>
+                    {item.approx_pcs ? (
+                      <p className="text-sm text-zinc-500">Approx {item.approx_pcs} pcs</p>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+      <button
+        type="button"
+        data-neutral-button
+        disabled={!canScroll}
+        onClick={() => setPage((current) => (current + 1) % pages.length)}
+        className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white/90 text-xl font-semibold text-zinc-600 shadow-sm transition hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Next recommendations"
+      >
+        {">"}
+      </button>
+    </div>
+  );
+}
+
+function CheckoutDatePicker({
+  value,
+  onChange,
+  blocks,
+  urgencyFeePercent,
+  urgencyPeriodDays,
+  showUrgencyNotice,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  blocks: QuoteBlock[];
+  urgencyFeePercent: number;
+  urgencyPeriodDays: number;
+  showUrgencyNotice: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const todayKey = useMemo(() => {
+    const today = new Date();
+    return buildDateKey(today);
+  }, []);
+
+  const calendarDays = useMemo(() => {
+    const year = calendarMonth.getFullYear();
+    const month = calendarMonth.getMonth();
+    const start = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const startOffset = (start.getDay() + 6) % 7;
+    const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
+    return Array.from({ length: totalCells }, (_, idx) => {
+      const day = idx - startOffset + 1;
+      return new Date(year, month, day);
+    });
+  }, [calendarMonth]);
+
+  const movePrev = () => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1));
+  const moveNext = () => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1));
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-700 hover:border-zinc-300"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+        >
+          Choose date
+        </button>
+        <input
+          type="text"
+          value={value}
+          readOnly
+          inputMode="none"
+          placeholder="YYYY-MM-DD"
+          className="w-full max-w-[220px] rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+        />
+      </div>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-xl rounded-2xl border border-zinc-200 bg-white p-4 shadow-lg">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Select a date</p>
+                <h3 className="text-lg font-semibold text-zinc-900">Delivery or pickup date</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-zinc-300"
+              >
+                Close
+              </button>
+            </div>
+            {showUrgencyNotice && (
+              <p className="mt-3 text-xs text-zinc-500">
+                {`${Math.round(urgencyFeePercent * 100) / 100}% surcharge needed within ${urgencyPeriodDays} day${
+                  urgencyPeriodDays === 1 ? "" : "s"
+                }.`}
+              </p>
+            )}
+
+            <div className="mt-4 rounded-xl border border-zinc-200 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={movePrev}
+                    className="rounded border border-zinc-200 px-2 py-1 text-xs font-semibold text-zinc-700 hover:border-zinc-300"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    type="button"
+                    onClick={moveNext}
+                    className="rounded border border-zinc-200 px-2 py-1 text-xs font-semibold text-zinc-700 hover:border-zinc-300"
+                  >
+                    Next
+                  </button>
+                </div>
+                <span className="text-sm font-semibold text-zinc-800">{formatMonthLabel(calendarMonth)}</span>
+              </div>
+              <div className={`mt-3 grid grid-cols-7 gap-2 ${dayLabelClass}`}>
+                {"Mon Tue Wed Thu Fri Sat Sun".split(" ").map((day) => (
+                  <div key={day} className="text-center">
+                    {day}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 grid grid-cols-7 gap-2">
+                {calendarDays.map((day) => {
+                  const key = buildDateKey(day);
+                  const inMonth = day.getMonth() === calendarMonth.getMonth();
+                  if (!inMonth) {
+                    return (
+                      <div
+                        key={key}
+                        className="min-h-[48px] rounded-lg border border-transparent bg-transparent"
+                      />
+                    );
+                  }
+                  const isPastOrToday = key <= todayKey;
+                  const blocked = isDateBlocked(key, blocks);
+                  const disabled = blocked || isPastOrToday;
+                  const isSelected = value === key;
+                  const isToday = key === todayKey;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => {
+                        if (disabled) return;
+                        onChange(key);
+                        setOpen(false);
+                      }}
+                      className={`min-h-[48px] rounded-lg border text-xs ${
+                        inMonth ? "border-zinc-200 text-zinc-700" : "border-zinc-100 text-zinc-300"
+                      } ${
+                        disabled ? "cursor-not-allowed bg-zinc-100 text-zinc-400" : "bg-white hover:border-zinc-300"
+                      } ${isSelected ? "ring-2 ring-zinc-900" : isToday ? "ring-1 ring-zinc-400" : ""}`}
+                      aria-disabled={disabled}
+                    >
+                      {day.getDate()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function CheckoutClient({
+  suggestions,
+  palette,
+  quoteBlocks,
+  urgencyFeePercent,
+  urgencyPeriodDays,
+  transactionFeePercent,
+}: Props) {
+  const { items, removeItem, updateQuantity, clearCart } = useCart();
+  const paletteMap = useMemo(() => buildPaletteLabelMap(palette), [palette]);
+  const [dueDate, setDueDate] = useState("");
+  const [pickup, setPickup] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS[0]);
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [organizationName, setOrganizationName] = useState("");
+  const [addressLine1, setAddressLine1] = useState("");
+  const [addressLine2, setAddressLine2] = useState("");
+  const [suburb, setSuburb] = useState("");
+  const [postcode, setPostcode] = useState("");
+  const [stateValue, setStateValue] = useState("");
+  const customItems = useMemo(
+    () => items.filter((item): item is CustomCartItem => item.type === "custom"),
+    [items]
+  );
+  const premadeItems = useMemo(
+    () => items.filter((item): item is PremadeCartItem => item.type === "premade"),
+    [items]
+  );
+  const hasCustomItems = customItems.length > 0;
+  const hasPremadeItems = premadeItems.length > 0;
+  const hasItems = hasCustomItems || hasPremadeItems;
+  const isDueDateBlocked = useMemo(
+    () => Boolean(dueDate && isDateBlocked(dueDate, quoteBlocks)),
+    [dueDate, quoteBlocks]
+  );
+  const isUrgencyWindow = useMemo(() => {
+    if (!hasCustomItems) return false;
+    if (!dueDate) return false;
+    const due = new Date(dueDate);
+    const now = new Date();
+    if (Number.isNaN(due.getTime())) return false;
+    const diffDays = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    return diffDays <= urgencyPeriodDays;
+  }, [dueDate, hasCustomItems, urgencyPeriodDays]);
+  const [placing, setPlacing] = useState(false);
+  const [placeError, setPlaceError] = useState<string | null>(null);
+  const [placeSuccess, setPlaceSuccess] = useState(false);
+  const [orderConfirmationVisible, setOrderConfirmationVisible] = useState(false);
+  const [pricingOverrides, setPricingOverrides] = useState<Record<string, PricingBreakdown>>({});
+  const [pricingLoading, setPricingLoading] = useState(false);
+  const [pricingError, setPricingError] = useState<string | null>(null);
+  const [showBreakdown, setShowBreakdown] = useState(false);
+
+  const buildExtrasForItem = (item: CustomCartItem) => {
+    if (item.jacketExtras?.length) return item.jacketExtras;
+    if (item.jacket === "two_colour_pinstripe") {
+      return [{ jacket: "two_colour" as const }, { jacket: "pinstripe" as const }];
+    }
+    if (item.jacket === "two_colour") return [{ jacket: "two_colour" as const }];
+    if (item.jacket === "pinstripe") return [{ jacket: "pinstripe" as const }];
+    if (item.jacket === "rainbow") return [{ jacket: "rainbow" as const }];
+    return [];
+  };
+
+  const fetchPricing = async (item: CustomCartItem, date?: string) => {
+    if (!item.categoryId || !item.packagingOptionId || !item.quantity) return null;
+    const extras = buildExtrasForItem(item);
+    const payload = {
+      categoryId: item.categoryId,
+      packaging: [{ optionId: item.packagingOptionId, quantity: item.quantity }],
+      labelsCount: item.labelsCount ?? 0,
+      dueDate: date || undefined,
+      extras: extras.length ? extras : undefined,
+    };
+    const res = await fetch("/api/quote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || "Unable to update pricing");
+    }
+    return (await res.json()) as PricingBreakdown;
+  };
+
+  useEffect(() => {
+    let active = true;
+    const needsReprice =
+      Boolean(dueDate) ||
+      customItems.some((item) => item.totalPrice == null || item.totalWeightKg == null);
+
+    if (!customItems.length || !needsReprice) {
+      setPricingOverrides({});
+      setPricingError(null);
+      setPricingLoading(false);
+      return;
+    }
+
+    setPricingLoading(true);
+    setPricingError(null);
+
+    void (async () => {
+      let errorMessage: string | null = null;
+      const results = await Promise.all(
+        customItems.map(async (item) => {
+          try {
+            return await fetchPricing(item, dueDate || undefined);
+          } catch (error) {
+            if (!errorMessage) {
+              errorMessage = error instanceof Error ? error.message : "Unable to update pricing";
+            }
+            return null;
+          }
+        })
+      );
+
+      if (!active) return;
+      const next: Record<string, PricingBreakdown> = {};
+      results.forEach((result, index) => {
+        if (result) next[customItems[index].id] = result;
+      });
+      setPricingOverrides(next);
+      setPricingError(errorMessage);
+      setPricingLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [customItems, dueDate]);
+
+  useEffect(() => {
+    if (!placeSuccess) return;
+    setOrderConfirmationVisible(true);
+    const timeout = setTimeout(() => {
+      setOrderConfirmationVisible(false);
+    }, 6000);
+    return () => clearTimeout(timeout);
+  }, [placeSuccess]);
+
+  const cartPricing = useMemo(() => {
+    let baseSubtotal = 0;
+    let urgencyTotal = 0;
+    let transactionTotal = 0;
+    let count = 0;
+    let premadeSubtotal = 0;
+    let hasPending = false;
+    const itemLines: Array<{ id: string; label: string; amount: number; pending?: boolean }> = [];
+
+    for (const item of items) {
+      count += item.quantity;
+      if (item.type === "premade") {
+        const amount = item.price * item.quantity;
+        premadeSubtotal += amount;
+        baseSubtotal += amount;
+        itemLines.push({
+          id: item.id,
+          label: `${item.quantity} x ${item.name}`,
+          amount,
+        });
+      } else {
+        const override = pricingOverrides[item.id];
+        if (override) {
+          const baseAmount = override.basePrice + override.packagingPrice + override.labelsPrice + override.extrasPrice;
+          baseSubtotal += baseAmount;
+          urgencyTotal += override.urgencyFee;
+          transactionTotal += override.transactionFee;
+          itemLines.push({
+            id: item.id,
+            label: item.title || item.designText || "Custom order",
+            amount: baseAmount,
+          });
+        } else if (item.totalPrice != null) {
+          baseSubtotal += item.totalPrice;
+          hasPending = true;
+          itemLines.push({
+            id: item.id,
+            label: item.title || item.designText || "Custom order",
+            amount: item.totalPrice,
+            pending: true,
+          });
+        }
+      }
+    }
+
+    transactionTotal += premadeSubtotal * (transactionFeePercent / 100);
+    const total = baseSubtotal + urgencyTotal + transactionTotal;
+
+    return { total, count, itemLines, urgencyTotal, transactionTotal, hasPending };
+  }, [items, pricingOverrides, transactionFeePercent]);
+
+  const addressDisabled = pickup;
+  const addressInputClass = `mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm ${
+    addressDisabled ? "bg-zinc-50 text-zinc-400" : "bg-white text-zinc-900"
+  }`;
+
+  const getMissingFields = () => {
+    const missing: string[] = [];
+    if (!hasItems) {
+      missing.push("items");
+      return missing;
+    }
+    if (hasCustomItems && !dueDate) missing.push("date required");
+    if (hasCustomItems && isDueDateBlocked) missing.push("available date");
+    if (!paymentMethod) missing.push("payment method");
+    if (!firstName.trim()) missing.push("first name");
+    if (!lastName.trim()) missing.push("surname");
+    if (!email.trim()) missing.push("email address");
+    if (!phone.trim()) missing.push("phone number");
+    if (!pickup) {
+      if (!addressLine1.trim()) missing.push("address line 1");
+      if (!suburb.trim()) missing.push("suburb or town");
+      if (!postcode.trim()) missing.push("postcode");
+      if (!stateValue.trim()) missing.push("state");
+    }
+    return missing;
+  };
+
+  const canPlace = hasItems && getMissingFields().length === 0;
+
+  const handlePlaceOrder = async () => {
+    setPlaceError(null);
+    setPlaceSuccess(false);
+    setOrderConfirmationVisible(false);
+    const missing = getMissingFields();
+    if (missing.length) {
+      setPlaceError(`Please complete: ${missing.join(", ")}.`);
+      return;
+    }
+
+    setPlacing(true);
+    try {
+      const resolvedPricing = new Map<string, PricingBreakdown | null>();
+      await Promise.all(
+        customItems.map(async (item) => {
+          if (pricingOverrides[item.id]) {
+            resolvedPricing.set(item.id, pricingOverrides[item.id]);
+            return;
+          }
+          const next = await fetchPricing(item, dueDate || undefined);
+          resolvedPricing.set(item.id, next);
+        })
+      );
+
+      const needsSplit = hasCustomItems && hasPremadeItems;
+      let customOrderNumber: string | null = null;
+      let premadeOrderNumber: string | null = null;
+      let cartOrderNumber: string | null = null;
+
+      if (needsSplit) {
+        const baseOrderNumber = await fetchOrderNumber();
+        customOrderNumber = `${baseOrderNumber}-a`;
+        premadeOrderNumber = `${baseOrderNumber}-b`;
+        cartOrderNumber = baseOrderNumber;
+      }
+      const quoteOrderRefs: QuoteOrderRef[] = [];
+
+      for (const item of customItems) {
+        const pricing = resolvedPricing.get(item.id) ?? pricingOverrides[item.id] ?? null;
+        const totalPrice = pricing?.total ?? item.totalPrice ?? null;
+        const totalWeightKg = pricing?.totalWeightKg ?? item.totalWeightKg ?? null;
+        if (!totalWeightKg || totalWeightKg <= 0) {
+          throw new Error("Order weight is missing.");
+        }
+
+        const payload = {
+          title: item.title,
+          description: item.description,
+          dateRequired: dueDate,
+          pickup,
+          state: stateValue,
+          location: pickup ? "Pickup" : suburb,
+          orderNumber: needsSplit ? customOrderNumber ?? undefined : cartOrderNumber ?? undefined,
+          designType: item.designType,
+          designText: item.designText,
+          jacketType: item.jacketType,
+          jacketColorOne: item.jacketColorOne,
+          jacketColorTwo: item.jacketColorTwo,
+          textColor: item.textColor,
+          heartColor: item.heartColor,
+          flavor: item.flavor,
+          paymentMethod,
+          logoUrl: item.logoUrl,
+          labelImageUrl: item.labelImageUrl,
+          notes: item.ingredientLabelsOptIn ? "Ingredient labels requested." : undefined,
+          customerName: `${firstName.trim()} ${lastName.trim()}`.trim(),
+          customerEmail: email.trim(),
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          phone: phone.trim(),
+          organizationName: organizationName.trim() || undefined,
+          addressLine1: pickup ? undefined : addressLine1.trim(),
+          addressLine2: pickup ? undefined : addressLine2.trim(),
+          suburb: pickup ? undefined : suburb.trim(),
+          postcode: pickup ? undefined : postcode.trim(),
+          categoryId: item.categoryId,
+          packagingOptionId: item.packagingOptionId,
+          quantity: item.quantity,
+          jarLidColor: item.jarLidColor,
+          labelsCount: item.labelsCount ?? undefined,
+          jacket: item.jacket,
+          totalWeightKg,
+          totalPrice,
+        };
+
+        const response = await fetch("/api/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || "Unable to place order");
+        }
+
+        const data = (await response.json().catch(() => ({}))) as { id?: string; orderNumber?: string | null };
+        if (!needsSplit && !cartOrderNumber && data.orderNumber) {
+          cartOrderNumber = data.orderNumber;
+        }
+        quoteOrderRefs.push({
+          id: data.id ?? item.id,
+          orderNumber: data.orderNumber ?? null,
+          title: item.title ?? null,
+        });
+      }
+
+      if (premadeItems.length > 0) {
+        const quoteLabel = buildQuoteOrderLabel(quoteOrderRefs);
+        for (const item of premadeItems) {
+          const totalWeightKg = (Number(item.weight_g) * item.quantity) / 1000;
+          if (!Number.isFinite(totalWeightKg) || totalWeightKg <= 0) {
+            throw new Error("Premade item weight is missing.");
+          }
+          const totalPrice = Number(item.price) * item.quantity;
+          const weightLabel = formatWeight(item.weight_g);
+          const description = weightLabel ? `${weightLabel} premade candy` : "Premade candy";
+          const payload = {
+            title: item.name,
+            description,
+            dateRequired: dueDate,
+            pickup,
+            state: stateValue,
+            location: pickup ? "Pickup" : suburb,
+            orderNumber: needsSplit ? premadeOrderNumber ?? undefined : cartOrderNumber ?? undefined,
+            designType: "premade",
+            designText: item.name,
+            paymentMethod,
+            notes: quoteLabel || undefined,
+            customerName: `${firstName.trim()} ${lastName.trim()}`.trim(),
+            customerEmail: email.trim(),
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            phone: phone.trim(),
+            organizationName: organizationName.trim() || undefined,
+            addressLine1: pickup ? undefined : addressLine1.trim(),
+            addressLine2: pickup ? undefined : addressLine2.trim(),
+            suburb: pickup ? undefined : suburb.trim(),
+            postcode: pickup ? undefined : postcode.trim(),
+            quantity: item.quantity,
+            totalWeightKg,
+            totalPrice,
+          };
+
+          const response = await fetch("/api/orders", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || "Unable to place premade order");
+          }
+          if (!needsSplit && !cartOrderNumber) {
+            const data = (await response.json().catch(() => ({}))) as { orderNumber?: string | null };
+            if (data.orderNumber) {
+              cartOrderNumber = data.orderNumber;
+            }
+          }
+        }
+      }
+
+      customItems.forEach((item) => removeItem(item.id));
+      premadeItems.forEach((item) => removeItem(item.id));
+      setPlaceSuccess(true);
+    } catch (error) {
+      setPlaceError(error instanceof Error ? error.message : "Unable to place order");
+    } finally {
+      setPlacing(false);
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      {orderConfirmationVisible ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-xl">
+            <p className="text-lg font-semibold text-zinc-900">Check your email for order confirmation.</p>
+            <button
+              type="button"
+              data-neutral-button
+              onClick={() => setOrderConfirmationVisible(false)}
+              className="mt-4 rounded-full px-4 py-2 text-sm font-semibold"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      ) : null}
+      <section className="grid gap-6 lg:grid-cols-[1.2fr,0.8fr]">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-zinc-900">Your cart</h2>
+              {items.length > 0 ? (
+                <button
+                  type="button"
+                  data-neutral-button
+                  onClick={clearCart}
+                  className="rounded-md px-3 py-1 text-xs font-semibold"
+                >
+                  Clear cart
+                </button>
+              ) : null}
+            </div>
+            {items.length === 0 ? (
+              <p className="mt-3 text-sm text-zinc-500">Your cart is empty.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {items.map((item) => (
+                  <CartItemRow
+                    key={item.id}
+                    item={item}
+                    pricing={pricingOverrides[item.id]}
+                    dueDate={dueDate || undefined}
+                    onRemove={() => removeItem(item.id)}
+                    onQuantityChange={(qty) => updateQuantity(item.id, qty)}
+                    paletteMap={paletteMap}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <section className="space-y-4">
+            <div className="text-center">
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-zinc-500">
+                Before you check out, you may also like...
+              </p>
+            </div>
+            <PremadeCarousel items={suggestions} />
+          </section>
+
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <h3 className="text-lg font-semibold text-zinc-900">Date & delivery</h3>
+            <div className="mt-3 space-y-3">
+              <div className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                <p>Date required</p>
+                <div className="mt-2">
+                  <CheckoutDatePicker
+                    value={dueDate}
+                    onChange={setDueDate}
+                    blocks={quoteBlocks}
+                    urgencyFeePercent={urgencyFeePercent}
+                    urgencyPeriodDays={urgencyPeriodDays}
+                    showUrgencyNotice={hasCustomItems}
+                  />
+                </div>
+                {dueDate && isUrgencyWindow && !isDueDateBlocked && (
+                  <span className="mt-1 block text-xs text-amber-600">
+                    {`${Math.round(urgencyFeePercent * 100) / 100}% surcharge if needed within ${urgencyPeriodDays} day${
+                      urgencyPeriodDays === 1 ? "" : "s"
+                    }.`}
+                  </span>
+                )}
+                {isDueDateBlocked && (
+                  <span className="mt-1 block text-xs text-red-600">
+                    This date is unavailable. Please choose another.
+                  </span>
+                )}
+              </div>
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Pickup or delivery</p>
+                <div className="flex w-full overflow-hidden rounded-full border border-[#e91e63] bg-[#fedae1] divide-x divide-[#e91e63]">
+                  <button
+                    type="button"
+                    data-segmented
+                    data-active={!pickup ? "true" : "false"}
+                    onClick={() => setPickup(false)}
+                    className="flex-1 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                  >
+                    Delivery
+                  </button>
+                  <button
+                    type="button"
+                    data-segmented
+                    data-active={pickup ? "true" : "false"}
+                    onClick={() => setPickup(true)}
+                    className="flex-1 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                  >
+                    Pickup
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <h3 className="text-lg font-semibold text-zinc-900">Payment method</h3>
+            <div className="mt-3">
+              <div className="flex w-full flex-col overflow-hidden rounded-2xl border border-[#e91e63] bg-[#fedae1] divide-y divide-[#e91e63]/30">
+                {PAYMENT_METHODS.map((method) => {
+                  const isActive = paymentMethod === method;
+                  return (
+                    <button
+                      key={method}
+                      type="button"
+                      data-segmented
+                      data-active={isActive ? "true" : "false"}
+                      onClick={() => setPaymentMethod(method)}
+                      className="w-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition"
+                    >
+                      {method}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <h3 className="text-lg font-semibold text-zinc-900">Your details</h3>
+            <div className="mt-3 space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                  First name*
+                  <input
+                    value={firstName}
+                    onChange={(event) => setFirstName(event.target.value)}
+                    className="mt-2 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+                  />
+                </label>
+                <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                  Surname*
+                  <input
+                    value={lastName}
+                    onChange={(event) => setLastName(event.target.value)}
+                    className="mt-2 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+                  />
+                </label>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                  Email address*
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    className="mt-2 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+                  />
+                </label>
+                <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                  Phone number*
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(event) => setPhone(event.target.value)}
+                    className="mt-2 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+                  />
+                </label>
+              </div>
+              <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                Organisation name
+                <input
+                  value={organizationName}
+                  onChange={(event) => setOrganizationName(event.target.value)}
+                  className="mt-2 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+                />
+              </label>
+              <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                Address line 1*
+                <input
+                  value={addressLine1}
+                  onChange={(event) => setAddressLine1(event.target.value)}
+                  className={addressInputClass}
+                  disabled={addressDisabled}
+                />
+              </label>
+              <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                Address line 2
+                <input
+                  value={addressLine2}
+                  onChange={(event) => setAddressLine2(event.target.value)}
+                  className={addressInputClass}
+                  disabled={addressDisabled}
+                />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                  Suburb or town*
+                  <input
+                    value={suburb}
+                    onChange={(event) => setSuburb(event.target.value)}
+                    className={addressInputClass}
+                    disabled={addressDisabled}
+                  />
+                </label>
+                <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                  Postcode*
+                  <input
+                    value={postcode}
+                    onChange={(event) => setPostcode(event.target.value)}
+                    className={addressInputClass}
+                    disabled={addressDisabled}
+                  />
+                </label>
+                <label className="block text-xs uppercase tracking-[0.2em] text-zinc-500">
+                  State*
+                  <select
+                    value={stateValue}
+                    onChange={(event) => setStateValue(event.target.value)}
+                    className={addressInputClass}
+                    disabled={addressDisabled}
+                  >
+                    <option value="">Select state</option>
+                    {AU_STATES.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+          <h2 className="text-lg font-semibold text-zinc-900">Order summary</h2>
+          <div className="mt-4 space-y-2 text-sm text-zinc-600">
+            <div className="flex items-center justify-between">
+              <span>Items</span>
+              <span>{cartPricing.count}</span>
+            </div>
+            <div className="flex items-center justify-between font-semibold text-zinc-900">
+              <span>Total</span>
+              <span>{pricingLoading ? "Updating..." : formatMoney(cartPricing.total)}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowBreakdown((current) => !current)}
+            className="mt-3 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500"
+          >
+            {showBreakdown ? "Hide price breakdown" : "View price breakdown"}
+          </button>
+          {showBreakdown && (
+            <div className="mt-3 space-y-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600">
+              {cartPricing.itemLines.length === 0 ? (
+                <p>No items yet.</p>
+              ) : (
+                cartPricing.itemLines.map((line) => (
+                  <div key={line.id} className="flex items-center justify-between gap-3">
+                    <span>
+                      {line.label}
+                      {line.pending ? " (pricing pending)" : ""}
+                    </span>
+                    <span className="text-zinc-900">{formatMoney(line.amount)}</span>
+                  </div>
+                ))
+              )}
+              {cartPricing.urgencyTotal > 0 ? (
+                <div className="flex items-center justify-between gap-3">
+                  <span>Urgency surcharge</span>
+                  <span className="text-zinc-900">{formatMoney(cartPricing.urgencyTotal)}</span>
+                </div>
+              ) : null}
+              {cartPricing.transactionTotal > 0 ? (
+                <div className="flex items-center justify-between gap-3">
+                  <span>Card surcharge</span>
+                  <span className="text-zinc-900">{formatMoney(cartPricing.transactionTotal)}</span>
+                </div>
+              ) : null}
+              {cartPricing.hasPending ? (
+                <p className="text-[11px] text-zinc-500">
+                  Custom order pricing updates once a date is selected.
+                </p>
+              ) : null}
+              <div className="flex items-center justify-between gap-3 border-t border-zinc-200 pt-2 text-sm font-semibold text-zinc-900">
+                <span>Total</span>
+                <span>{formatMoney(cartPricing.total)}</span>
+              </div>
+            </div>
+          )}
+          {pricingError ? <p className="mt-2 text-xs text-red-600">{pricingError}</p> : null}
+          {placeError ? <p className="mt-2 text-xs text-red-600">{placeError}</p> : null}
+          {placeSuccess ? (
+            <p className="mt-2 text-xs font-semibold text-emerald-600">Order placed.</p>
+          ) : null}
+          <button
+            type="button"
+            disabled={placing}
+            onClick={handlePlaceOrder}
+            className={`mt-4 w-full rounded-md px-4 py-2 text-sm font-semibold ${
+              placing
+                ? "cursor-not-allowed border border-zinc-200 bg-zinc-100 text-zinc-500"
+                : canPlace
+                  ? "border border-zinc-900 bg-zinc-900 text-white hover:bg-zinc-800"
+                  : "border border-zinc-200 bg-zinc-100 text-zinc-500 hover:border-zinc-300"
+            }`}
+          >
+            {placing ? "Placing..." : "Place order"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+

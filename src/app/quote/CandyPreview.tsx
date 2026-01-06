@@ -16,6 +16,7 @@ type Props = {
   textColor?: string;
   heartColor?: string;
   isInitials?: boolean;
+  dimensions?: { width: number; height: number };
 };
 
 const sora = Sora({
@@ -43,6 +44,7 @@ export function CandyPreview({
   textColor,
   heartColor,
   isInitials,
+  dimensions,
 }: Props) {
   const baseColor = colorOne || "#b7b7b7";
   const accentColor = colorTwo || colorOne || "#b7b7b7";
@@ -176,9 +178,17 @@ export function CandyPreview({
     []
   );
 
+  const previewSize = dimensions ?? previewDimensions;
+
   return (
-    <div className={`${sora.className} flex items-center justify-center rounded-xl border border-zinc-200 bg-white p-3 shadow-sm`}>
-      <div className="relative" style={{ width: previewDimensions.width, height: previewDimensions.height }}>
+    <div className={`${sora.className} flex w-full items-center justify-center bg-white p-[0.1rem]`}>
+      <div
+        className="relative mx-auto w-full"
+        style={{
+          maxWidth: previewSize.width,
+          aspectRatio: `${previewSize.width} / ${previewSize.height}`,
+        }}
+      >
         <svg
           viewBox="0 0 1772 1300"
           xmlns="http://www.w3.org/2000/svg"
@@ -287,7 +297,7 @@ function OverlayText({ logoUrl, lineOne, lineTwo, designText, showHeart, textCol
   const straightFontSize = 122;
   const initialsFontSize = 180; // maps to ~35px at rendered size
   const heartScale = 9.49;
-  const logoSize = 560;
+  const logoSize = 620;
   const logoOffset = logoSize / 2;
   const cappedDesign = (designText || lineOne || "").slice(0, 14);
   const hasLineOne = Boolean(lineOne);
@@ -302,7 +312,7 @@ function OverlayText({ logoUrl, lineOne, lineTwo, designText, showHeart, textCol
   const heartFill = heartColor;
   const heartTransform = (yOffset = 0) => `translate(${cx} ${cy + yOffset}) scale(${heartScale}) translate(-12 -12)`;
   const initialsYOffset = 0;
-  const straightYOffset = 10;
+  const straightYOffset = 0;
   const arcLetterSpacing = hasAnyWeddingNames ? "0.08em" : hasTwoLines ? "0.08em" : "0.02em";
   const arcFontSize = hasAnyWeddingNames ? weddingArcFontSize : arcFontSizeBase;
   const lowerArcYOffset = 24;
@@ -430,13 +440,22 @@ function OverlayText({ logoUrl, lineOne, lineTwo, designText, showHeart, textCol
       ) : arcMode ? (
         <text fontSize={singleArcFontSize} fontWeight="700" fill={textColor} letterSpacing={arcLetterSpacing}>
           <textPath href="#upperArc" startOffset="50%" textAnchor="middle" dominantBaseline="middle">
-            {(cappedDesign || "Candy").toUpperCase()}
+            {cappedDesign.toUpperCase()}
           </textPath>
         </text>
       ) : (
         <>
-          <text x={cx} y={cy + straightYOffset} fontSize={straightFontSize} fontWeight="700" fill={textColor} textAnchor="middle" letterSpacing="0">
-            {(cappedDesign || "Candy").toUpperCase()}
+          <text
+            x={cx}
+            y={cy + straightYOffset}
+            fontSize={straightFontSize}
+            fontWeight="700"
+            fill={textColor}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            letterSpacing="0"
+          >
+            {cappedDesign.toUpperCase()}
           </text>
           {showHeart && hasTwoLines && (
             <g transform={heartTransform(20)}>
