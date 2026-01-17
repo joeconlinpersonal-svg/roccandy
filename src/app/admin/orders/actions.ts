@@ -101,6 +101,8 @@ export async function upsertOrder(formData: FormData) {
   const isWedding = resolvedCategoryId?.startsWith("weddings");
   const nameFromParts = [first_name, last_name].filter(Boolean).join(" ") || null;
   const resolvedCustomerName = customer_name_raw ?? nameFromParts ?? existing?.customer_name ?? null;
+  const resolvedTextColor = !isBranded ? text_color_raw ?? existing?.text_color ?? null : null;
+  const resolvedHeartColor = isWedding ? heart_color_raw ?? existing?.heart_color ?? null : null;
   const jacketType =
     jacket_type ??
     (jacket === "rainbow"
@@ -162,20 +164,10 @@ export async function upsertOrder(formData: FormData) {
       address_line2: address_line2 ?? existing?.address_line2 ?? null,
       suburb: suburb ?? existing?.suburb ?? null,
       postcode: postcode ?? existing?.postcode ?? null,
+      text_color: resolvedTextColor,
+      heart_color: resolvedHeartColor,
+      created_at: created_at ?? undefined,
     };
-    if (created_at) {
-      basePayload.created_at = created_at;
-    }
-    if (!isBranded) {
-      basePayload.text_color = text_color_raw ?? existing?.text_color ?? null;
-    } else {
-      basePayload.text_color = null;
-    }
-    if (isWedding) {
-      basePayload.heart_color = heart_color_raw ?? existing?.heart_color ?? null;
-    } else {
-      basePayload.heart_color = null;
-    }
 
     if (id) {
       const { error } = await client.from("orders").update(basePayload).eq("id", id);
