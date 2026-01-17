@@ -5,7 +5,7 @@ import { AddPremadeToCartButton } from "@/components/AddPremadeToCartButton";
 import { useCart, type CartItem, type CustomCartItem, type PremadeCartItem } from "@/components/CartProvider";
 import { CandyPreview } from "@/app/quote/CandyPreview";
 import { paletteSections } from "@/app/admin/settings/palette";
-import type { ColorPaletteRow, QuoteBlock } from "@/lib/data";
+import type { ColorPaletteRow, LabelType, QuoteBlock } from "@/lib/data";
 
 type PremadeSuggestion = {
   id: string;
@@ -34,6 +34,7 @@ type Props = {
   suggestions: PremadeSuggestion[];
   palette: ColorPaletteRow[];
   quoteBlocks: QuoteBlock[];
+  labelTypes: LabelType[];
   urgencyFeePercent: number;
   urgencyPeriodDays: number;
   transactionFeePercent: number;
@@ -70,6 +71,19 @@ function formatPackagingLabel(label?: string | null) {
   const parts = label.split(/\s+-\s+/).map((part) => part.trim()).filter(Boolean);
   if (parts.length > 1) return parts.join(" ");
   return label.replace(/\s+/g, " ").trim();
+}
+
+const LABEL_SHAPE_LABELS: Record<LabelType["shape"], string> = {
+  square: "Square",
+  rectangular: "Rectangular",
+  circle: "Circle",
+};
+
+function formatLabelTypeLabel(labelType?: LabelType | null) {
+  if (!labelType) return "";
+  const shape = LABEL_SHAPE_LABELS[labelType.shape] ?? labelType.shape;
+  const dimension = (labelType.dimensions || "").trim();
+  return dimension ? `${shape} ${dimension}` : shape;
 }
 
 type QuoteOrderRef = {
@@ -189,6 +203,7 @@ function CartItemRow({
   pricing,
   dueDate,
   paletteMap,
+  labelTypeMap,
 }: {
   item: CartItem;
   onRemove: () => void;
@@ -196,6 +211,7 @@ function CartItemRow({
   pricing?: PricingBreakdown;
   dueDate?: string;
   paletteMap?: Map<string, string>;
+  labelTypeMap?: Map<string, LabelType>;
 }) {
   if (item.type === "premade") {
     return (
@@ -261,6 +277,8 @@ function CartItemRow({
     item.labelsCount != null ? `${item.labelsCount}` : item.labelImageUrl ? "Yes" : "No";
   const ingredientLabelsValue = item.ingredientLabelsOptIn ? "Yes" : "No";
   const labelSummary = `${labelsValue} / ${ingredientLabelsValue}`;
+  const labelTypeLabel = item.labelTypeId ? formatLabelTypeLabel(labelTypeMap?.get(item.labelTypeId)) : "";
+  const labelTypeDisplay = labelTypeLabel || item.labelTypeId || "";
   const previewMode =
     rawJacketValue === "rainbow"
       ? "rainbow"
@@ -283,6 +301,7 @@ function CartItemRow({
     { label: "Heart colour", value: heartColorValue },
     { label: "Flavour", value: item.flavor || "" },
     { label: "Label / Ingredient Label", value: labelSummary },
+    { label: "Label type", value: labelTypeDisplay },
   ].filter((detail) => detail.value !== "");
 
   const handleRemove = () => {
@@ -599,12 +618,14 @@ export function CheckoutClient({
   suggestions,
   palette,
   quoteBlocks,
+  labelTypes,
   urgencyFeePercent,
   urgencyPeriodDays,
   transactionFeePercent,
 }: Props) {
   const { items, removeItem, updateQuantity, clearCart } = useCart();
   const paletteMap = useMemo(() => buildPaletteLabelMap(palette), [palette]);
+  const labelTypeMap = useMemo(() => new Map(labelTypes.map((labelType) => [labelType.id, labelType])), [labelTypes]);
   const [dueDate, setDueDate] = useState("");
   const [pickup, setPickup] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS[0]);
@@ -883,6 +904,7 @@ export function CheckoutClient({
           paymentMethod,
           logoUrl: item.logoUrl,
           labelImageUrl: item.labelImageUrl,
+          labelTypeId: item.labelTypeId,
           notes: item.ingredientLabelsOptIn ? "Ingredient labels requested." : undefined,
           customerName: `${firstName.trim()} ${lastName.trim()}`.trim(),
           customerEmail: email.trim(),
@@ -1036,6 +1058,7 @@ export function CheckoutClient({
                     onRemove={() => removeItem(item.id)}
                     onQuantityChange={(qty) => updateQuantity(item.id, qty)}
                     paletteMap={paletteMap}
+                    labelTypeMap={labelTypeMap}
                   />
                 ))}
               </div>
@@ -1316,5 +1339,3 @@ export function CheckoutClient({
     </div>
   );
 }
-
-

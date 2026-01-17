@@ -1,5 +1,6 @@
 import {
   getCategories,
+  getLabelTypes,
   getColorPalette,
   getFlavors,
   getPackagingOptionImages,
@@ -54,7 +55,7 @@ function buildMinBasePrices(categories: Category[], tiers: WeightTier[]) {
 }
 
 export default async function QuotePage({ searchParams }: QuotePageProps) {
-  const [categories, packagingOptions, packagingImages, settings, flavors, palette, tiers] = await Promise.all([
+  const [categories, packagingOptions, packagingImages, settings, flavors, palette, tiers, labelTypes] = await Promise.all([
     getCategories(),
     getPackagingOptions(),
     getPackagingOptionImages(),
@@ -62,6 +63,7 @@ export default async function QuotePage({ searchParams }: QuotePageProps) {
     getFlavors(),
     getColorPalette(),
     getWeightTiers(),
+    getLabelTypes(),
   ]);
   const enquiriesEmail = process.env.ENQUIRIES_EMAIL?.trim() || "admin@roccandy.com.au";
   const enquiriesHref = `mailto:${enquiriesEmail}`;
@@ -123,6 +125,7 @@ export default async function QuotePage({ searchParams }: QuotePageProps) {
             settings={settings}
             flavors={flavors}
             palette={palette}
+            labelTypes={labelTypes}
             minBasePrices={minBasePrices}
             initialOrderType={initialOrderType}
           />

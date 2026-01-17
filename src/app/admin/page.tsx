@@ -66,6 +66,11 @@ const sections = [
         label: "Packaging Options & Pricing",
         description: "Types, sizes, lids, and images.",
       },
+      {
+        href: "/admin/packaging/labels",
+        label: "Labels",
+        description: "Label types by shape and size.",
+      },
     ],
   },
   {

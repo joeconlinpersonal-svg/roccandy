@@ -22,8 +22,17 @@ export type PackagingOption = {
   candy_weight_g: number;
   allowed_categories: string[];
   lid_colors: string[] | null;
+  label_type_ids: string[] | null;
   unit_price: number;
   max_packages: number;
+};
+
+export type LabelType = {
+  id: string;
+  shape: "square" | "rectangular" | "circle";
+  dimensions: string;
+  cost: number;
+  created_at: string;
 };
 
 export type LabelRange = {
@@ -84,6 +93,17 @@ export type PremadeCandy = {
   is_active: boolean;
   sort_order: number | null;
   created_at: string;
+  sku: string | null;
+  short_description: string | null;
+  brand: string | null;
+  google_product_category: string | null;
+  product_condition: string | null;
+  sale_price: number | null;
+  availability: string | null;
+  woo_product_id: string | null;
+  woo_sync_status: string | null;
+  woo_last_sync_at: string | null;
+  woo_sync_error: string | null;
 };
 
 export type OrderRow = {
@@ -109,7 +129,9 @@ export type OrderRow = {
   flavor: string | null;
   payment_method: string | null;
   logo_url: string | null;
+  label_image_url: string | null;
   due_date: string | null;
+  label_type_id: string | null;
   total_weight_kg: number;
   total_price: number | null;
   status: string;
@@ -196,6 +218,10 @@ export async function getPackagingOptionImages() {
 
 export async function getLabelRanges() {
   return fetchTable<LabelRange>("label_ranges");
+}
+
+export async function getLabelTypes() {
+  return fetchTable<LabelType>("label_types");
 }
 
 export async function getSettings() {

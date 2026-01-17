@@ -30,8 +30,17 @@ create table if not exists packaging_options (
   candy_weight_g numeric(10,2) not null,
   allowed_categories text[] not null,
   lid_colors text[] not null default '{}',
+  label_type_ids uuid[] not null default '{}',
   unit_price numeric(12,2) not null,
   max_packages integer not null
+);
+
+create table if not exists label_types (
+  id uuid primary key default gen_random_uuid(),
+  shape text not null check (shape in ('square','rectangular','circle')),
+  dimensions text not null,
+  cost numeric(12,2) not null default 0,
+  created_at timestamptz not null default now()
 );
 
 create table if not exists packaging_option_images (
@@ -96,7 +105,18 @@ create table if not exists premade_candies (
   is_active boolean not null default true,
   sort_order int not null default 0,
   image_path text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  sku text,
+  short_description text,
+  brand text default 'Roc Candy',
+  google_product_category text default 'Food, Beverages & Tobacco > Food Items > Candy',
+  product_condition text default 'new',
+  sale_price numeric(12,2),
+  availability text default 'in_stock',
+  woo_product_id text,
+  woo_sync_status text,
+  woo_last_sync_at timestamptz,
+  woo_sync_error text
 );
 create index if not exists premade_candies_name_idx on public.premade_candies (name);
 
@@ -118,6 +138,7 @@ create table if not exists orders (
   text_color text,
   heart_color text,
   label_image_url text,
+  label_type_id uuid references label_types(id),
   due_date date,
   total_weight_kg numeric not null check (total_weight_kg > 0),
   total_price numeric,
@@ -190,6 +211,7 @@ alter table categories enable row level security;
 alter table weight_tiers enable row level security;
 alter table packaging_options enable row level security;
 alter table packaging_option_images enable row level security;
+alter table label_types enable row level security;
   alter table label_ranges enable row level security;
   alter table settings enable row level security;
   alter table color_palette enable row level security;

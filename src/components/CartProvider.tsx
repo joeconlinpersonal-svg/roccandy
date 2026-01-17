@@ -33,6 +33,7 @@ export type CustomCartItem = {
   jarLidColor?: string | null;
   labelsCount?: number | null;
   labelImageUrl?: string | null;
+  labelTypeId?: string | null;
   ingredientLabelsOptIn?: boolean;
   jacket?: string | null;
   jacketType?: string | null;

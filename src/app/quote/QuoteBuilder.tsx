@@ -2,7 +2,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { Category, ColorPaletteRow, Flavor, PackagingOption, PackagingOptionImage, SettingsRow } from "@/lib/data";
+import type {
+  Category,
+  ColorPaletteRow,
+  Flavor,
+  LabelType,
+  PackagingOption,
+  PackagingOptionImage,
+  SettingsRow,
+} from "@/lib/data";
 import { CandyPreview } from "./CandyPreview";
 import { paletteSections } from "@/app/admin/settings/palette";
 import { useCart } from "@/components/CartProvider";
@@ -16,6 +24,7 @@ type Props = {
   settings: SettingsRow;
   flavors: Flavor[];
   palette: ColorPaletteRow[];
+  labelTypes: LabelType[];
   minBasePrices: Record<string, number>;
   initialOrderType?: OrderTypeId;
 };
@@ -190,16 +199,23 @@ function PalettePicker({
   onChange,
   groups,
   onCustom,
+  placeholderLabel = "Select colour",
+  placeholderSwatch,
 }: {
   label: string;
   value: string;
   onChange: (hex: string) => void;
   groups: PaletteGroup[];
   onCustom: () => void;
+  placeholderLabel?: string;
+  placeholderSwatch?: string;
 }) {
   const detailsRef = useRef<HTMLDetailsElement | null>(null);
   const flat = groups.flatMap((group) => group.options);
-  const selected = flat.find((option) => option.hex.toLowerCase() === value.toLowerCase());
+  const hasValue = Boolean(value);
+  const selected = hasValue ? flat.find((option) => option.hex.toLowerCase() === value.toLowerCase()) : undefined;
+  const selectedLabel = hasValue ? selected?.label ?? "Custom" : placeholderLabel;
+  const swatchValue = hasValue ? value : placeholderSwatch ?? "#e5e7eb";
   const handleSelect = (hex: string) => {
     onChange(hex);
     if (detailsRef.current) {
@@ -211,12 +227,12 @@ function PalettePicker({
       <summary className="flex cursor-pointer list-none items-center gap-3 text-xs font-semibold text-zinc-700">
         <span className="uppercase tracking-[0.2em] text-zinc-500">{label}</span>
         <span className="ml-auto flex items-center gap-2 text-[11px] font-medium text-zinc-600">
-          <span>{selected?.label ?? "Custom"}</span>
+          <span>{selectedLabel}</span>
           <span
             style={{
               width: 20,
               height: 20,
-              backgroundColor: value,
+              backgroundColor: swatchValue,
               border: "1px solid #000",
               borderRadius: 9999,
               boxSizing: "border-box",
@@ -312,6 +328,12 @@ const LID_COLOR_SWATCH: Record<string, string> = {
   silver: "#d7d7d7",
   gold: "#d2b16f",
 };
+const INGREDIENT_LABEL_PREVIEW_SRC = "/labels/ingredient-label.png";
+const LABEL_SHAPE_LABELS: Record<LabelType["shape"], string> = {
+  square: "Square",
+  rectangular: "Rectangular",
+  circle: "Circle",
+};
 
 function buildPublicImageUrl(imagePath: string | null | undefined) {
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -336,6 +358,12 @@ function buildFlavorImageUrl(name: string, cacheBust?: number) {
   const encoded = encodeURIComponent(fileName);
   const suffix = cacheBust ? `?v=${cacheBust}` : "";
   return `${base}/storage/v1/object/public/${FLAVOR_IMAGE_BUCKET}/${encoded}${suffix}`;
+}
+
+function formatLabelTypeLabel(labelType: LabelType) {
+  const shape = LABEL_SHAPE_LABELS[labelType.shape] ?? labelType.shape;
+  const dimension = (labelType.dimensions || "").trim();
+  return dimension ? `${shape} ${dimension}` : shape;
 }
 
 function FlavorIcon({
@@ -368,6 +396,7 @@ export function QuoteBuilder({
   settings,
   flavors,
   palette,
+  labelTypes,
   minBasePrices,
   initialOrderType,
 }: Props) {
@@ -375,6 +404,7 @@ export function QuoteBuilder({
   const router = useRouter();
   const { addCustomItem } = useCart();
   const paletteGroups = useMemo(() => buildPaletteGroups(palette), [palette]);
+  const labelTypeById = useMemo(() => new Map(labelTypes.map((labelType) => [labelType.id, labelType])), [labelTypes]);
   const [flavorCacheBust, setFlavorCacheBust] = useState(0);
   useEffect(() => {
     setFlavorCacheBust(Date.now());
@@ -418,9 +448,12 @@ export function QuoteBuilder({
 
   const [labelsOptIn, setLabelsOptIn] = useState(false);
   const [ingredientLabelsOptIn, setIngredientLabelsOptIn] = useState(false);
+  const [labelTypeId, setLabelTypeId] = useState("");
   const [labelCountOverride, setLabelCountOverride] = useState(0);
   const [labelImageUrl, setLabelImageUrl] = useState("");
   const [labelImageError, setLabelImageError] = useState<string | null>(null);
+  const [labelFileName, setLabelFileName] = useState("");
+  const [ingredientPreviewFailed, setIngredientPreviewFailed] = useState(false);
   const [rainbowJacket, setRainbowJacket] = useState(false);
   const [pinstripeJacket, setPinstripeJacket] = useState(false);
   const [twoColourJacket, setTwoColourJacket] = useState(false);
@@ -437,12 +470,12 @@ export function QuoteBuilder({
   const [customText, setCustomText] = useState("");
   const [orgName, setOrgName] = useState("");
   const [flavor, setFlavor] = useState("");
-  const [jacketColorOne, setJacketColorOne] = useState(defaultJacketColor);
-  const [jacketColorTwo, setJacketColorTwo] = useState(defaultJacketColor);
+  const [jacketColorOne, setJacketColorOne] = useState("");
+  const [jacketColorTwo, setJacketColorTwo] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [logoError, setLogoError] = useState<string | null>(null);
-  const [heartColor, setHeartColor] = useState(defaultTextColor);
-  const [textColor, setTextColor] = useState(defaultTextColor);
+  const [heartColor, setHeartColor] = useState("");
+  const [textColor, setTextColor] = useState("");
   const [customPickerOpen, setCustomPickerOpen] = useState(false);
   const [customTarget, setCustomTarget] = useState<"heart" | "text" | "jacket1" | "jacket2" | null>(null);
   const [customHex, setCustomHex] = useState(defaultJacketColor);
@@ -459,8 +492,18 @@ export function QuoteBuilder({
   const flavorDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const hasManualSubtypeRef = useRef(false);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const navEntry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    const isReload = navEntry?.type === "reload" || performance.navigation?.type === 1;
+    if (isReload) {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }
+  }, []);
+
   const openCustomPicker = (target: "heart" | "text" | "jacket1" | "jacket2", current: string) => {
-    const normalized = normalizeHex(current, defaultJacketColor);
+    const fallback = target === "text" || target === "heart" ? defaultTextColor : defaultJacketColor;
+    const normalized = normalizeHex(current, fallback);
     setCustomTarget(target);
     setCustomHex(normalized);
     setCustomHexInput(normalized);
@@ -472,7 +515,8 @@ export function QuoteBuilder({
 
   const applyCustomColor = () => {
     if (!customTarget) return;
-    const normalized = normalizeHex(customHex, defaultJacketColor);
+    const fallback = customTarget === "text" || customTarget === "heart" ? defaultTextColor : defaultJacketColor;
+    const normalized = normalizeHex(customHex, fallback);
     if (customTarget === "heart") setHeartColor(normalized);
     if (customTarget === "text") setTextColor(normalized);
     if (customTarget === "jacket1") setJacketColorOne(normalized);
@@ -540,6 +584,10 @@ export function QuoteBuilder({
   const previewJacketMode = rainbowJacket ? "rainbow" : twoColourJacket ? "two_colour" : pinstripeJacket ? "pinstripe" : "";
   const previewShowPinstripe = pinstripeJacket;
   const showColourTwo = twoColourJacket && !rainbowJacket;
+  const previewJacketColorOne = jacketColorOne || defaultJacketColor;
+  const previewJacketColorTwo = jacketColorTwo || defaultJacketColor;
+  const previewTextColor = textColor || defaultTextColor;
+  const previewHeartColor = heartColor || previewTextColor;
   const formatMoney = (value: number) => `$${value.toFixed(2)}`;
   const mainTitle = ORDER_TYPE_TITLES[orderType] ?? "Candy";
   const subtitleLabel =
@@ -572,15 +620,18 @@ export function QuoteBuilder({
   };
   const handleLabelUpload = (file?: File | null) => {
     if (!file) {
+      setLabelFileName("");
       setLabelImageUrl("");
       setLabelImageError(null);
       return;
     }
     if (file.size > 2 * 1024 * 1024) {
+      setLabelFileName("");
       setLabelImageUrl("");
       setLabelImageError("File is too large. Max 2MB.");
       return;
     }
+    setLabelFileName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
       const result = typeof reader.result === "string" ? reader.result : "";
@@ -588,6 +639,7 @@ export function QuoteBuilder({
       setLabelImageError(null);
     };
     reader.onerror = () => {
+      setLabelFileName("");
       setLabelImageUrl("");
       setLabelImageError("Unable to read the file.");
     };
@@ -665,6 +717,11 @@ export function QuoteBuilder({
     () => packagingOptions.find((p) => p.id === selectedOptionId),
     [packagingOptions, selectedOptionId]
   );
+  const availableLabelTypes = useMemo(() => {
+    const ids = selectedOption?.label_type_ids ?? [];
+    return ids.map((id) => labelTypeById.get(id)).filter((item): item is LabelType => Boolean(item));
+  }, [labelTypeById, selectedOption?.label_type_ids]);
+  const hasLabelTypes = availableLabelTypes.length > 0;
   const isJarOption = useMemo(
     () => (selectedOption?.type ?? "").toLowerCase().includes("jar"),
     [selectedOption]
@@ -751,6 +808,15 @@ export function QuoteBuilder({
       (isBranded && logoUrl) ||
       (!isWedding && !isText && !isBranded) // fallback
   );
+  const jacketColorsValid = rainbowJacket
+    ? true
+    : showColourTwo
+      ? Boolean(jacketColorOne) && Boolean(jacketColorTwo)
+      : Boolean(jacketColorOne);
+  const textColorValid = isBranded ? true : Boolean(textColor);
+  const heartColorValid = isWedding ? Boolean(heartColor) : true;
+  const colorsValid = jacketColorsValid && textColorValid && heartColorValid;
+  const labelTypeValid = !labelsOptIn || (hasLabelTypes && Boolean(labelTypeId));
   const designRequirementLabel = isWedding
     ? isWeddingInitials
       ? "Initials"
@@ -765,6 +831,8 @@ export function QuoteBuilder({
     !!result &&
     designValid &&
     flavorValid &&
+    colorsValid &&
+    labelTypeValid &&
     (!labelsOptIn || !!labelImageUrl);
   const missingFields = useMemo(() => {
     const missing: string[] = [];
@@ -774,21 +842,42 @@ export function QuoteBuilder({
     if (!designValid) {
       missing.push(designRequirementLabel);
     }
+    if (!rainbowJacket && (!jacketColorOne || (showColourTwo && !jacketColorTwo))) {
+      missing.push(showColourTwo ? "Jacket colours" : "Jacket colour");
+    }
+    if (!isBranded && !textColor) {
+      missing.push("Text colour");
+    }
+    if (isWedding && !heartColor) {
+      missing.push("Heart colour");
+    }
     if (!flavorValid) {
       missing.push("Candy flavor");
     }
     if (labelsOptIn && !labelImageUrl) {
       missing.push("Label artwork");
     }
+    if (labelsOptIn && !labelTypeValid) {
+      missing.push("Label type");
+    }
     return missing;
   }, [
     designRequirementLabel,
     designValid,
     flavorValid,
+    heartColor,
+    isBranded,
+    isWedding,
+    jacketColorOne,
+    jacketColorTwo,
     labelImageUrl,
+    labelTypeValid,
     labelsOptIn,
+    rainbowJacket,
     selectedOptionId,
     selectionQty,
+    showColourTwo,
+    textColor,
   ]);
 
   useEffect(() => {
@@ -799,10 +888,27 @@ export function QuoteBuilder({
 
   useEffect(() => {
     if (!labelsOptIn) {
+      setLabelFileName("");
       setLabelImageUrl("");
       setLabelImageError(null);
     }
   }, [labelsOptIn]);
+
+  useEffect(() => {
+    if (!labelsOptIn) {
+      if (labelTypeId) setLabelTypeId("");
+      return;
+    }
+    const hasValidSelection =
+      labelTypeId && availableLabelTypes.some((labelType) => labelType.id === labelTypeId);
+    if (hasValidSelection) return;
+    const nextDefault = availableLabelTypes[0]?.id ?? "";
+    if (nextDefault) {
+      setLabelTypeId(nextDefault);
+    } else if (labelTypeId) {
+      setLabelTypeId("");
+    }
+  }, [availableLabelTypes, labelTypeId, labelsOptIn]);
 
   useEffect(() => {
     if (hasBulkSelection && labelsOptIn && labelCountOverride === 0 && totalPackages > 0) {
@@ -1325,67 +1431,127 @@ export function QuoteBuilder({
 
             <div className="mt-4 w-full border-t border-zinc-200 pt-4">
               <h3 className="text-lg font-semibold text-zinc-900">Labels</h3>
-              <div className="mt-3 space-y-3">
-                <div className="flex items-center gap-2 text-sm text-zinc-700">
-                  <input
-                    type="checkbox"
-                    checked={labelsOptIn}
-                    onChange={(e) => setLabelsOptIn(e.target.checked)}
-                    className="rounded border-zinc-300"
-                  />
-                  <span>Labels</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm text-zinc-700">
-                  <input
-                    type="checkbox"
-                    checked={ingredientLabelsOptIn}
-                    onChange={(e) => setIngredientLabelsOptIn(e.target.checked)}
-                    className="rounded border-zinc-300"
-                  />
-                  <span>Ingredient labels</span>
-                </div>
-                {labelsOptIn && hasBulkSelection && (
-                  <label className="block text-xs text-zinc-600">
-                    Labels count (max {settings.labels_max_bulk})
+              <div className="mt-3 grid gap-4 md:grid-cols-2">
+                <div className="space-y-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  <label className="group flex items-start gap-3 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-300 cursor-pointer">
                     <input
-                      type="number"
-                      min={0}
-                      max={settings.labels_max_bulk}
-                      value={labelCountOverride}
-                      onChange={(e) => setLabelCountOverride(Number(e.target.value))}
-                      className="mt-1 w-full rounded border border-zinc-200 px-2 py-1"
+                      type="checkbox"
+                      checked={labelsOptIn}
+                      onChange={(e) => setLabelsOptIn(e.target.checked)}
+                      className="mt-0.5 h-5 w-5 rounded border-zinc-300 text-[#e91e63] accent-[#e91e63] focus:ring-[#e91e63]"
                     />
+                    <span className="flex-1 space-y-0.5">
+                      <span className="block text-sm font-semibold text-zinc-900">Custom labels</span>
+                      <span className="block text-xs text-zinc-500">
+                        Add printed labels to your packaging.
+                      </span>
+                    </span>
                   </label>
-                )}
-                {labelsOptIn && (
-                  <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700 space-y-2">
-                    <p>
-                      Take your order to the next level, the perfect finishing touch for weddings, events and branding.
-                      We will send label directly to printer and apply to packaging, please check artwork and size as we do
-                      not proof check. Contact us for more information admin@roccandy.com.au
-                    </p>
-                    <div>
-                      <p className="font-semibold">Artwork requirements</p>
-                      <p>Artwork to be PDF or JPG ready @ 300dpi colour or B&amp;W same price.</p>
+                  {labelsOptIn && (
+                    <div className="space-y-3">
+                      <div className="rounded-lg border border-zinc-200 bg-white p-3 text-xs text-zinc-700">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Label type</p>
+                        {hasLabelTypes ? (
+                          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                            {availableLabelTypes.map((labelType) => {
+                              const isActive = labelTypeId === labelType.id;
+                              return (
+                                <button
+                                  key={labelType.id}
+                                  type="button"
+                                  onClick={() => setLabelTypeId(labelType.id)}
+                                  aria-pressed={isActive}
+                                  className={`inline-flex w-full items-center justify-between rounded-full border bg-white px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.18em] shadow-sm transition ${
+                                    isActive
+                                      ? "border-[#e91e63] bg-[#fbd6e3] text-[#e91e63]"
+                                      : "border-zinc-300 text-zinc-700 hover:border-zinc-400"
+                                  }`}
+                                >
+                                  <span>{formatLabelTypeLabel(labelType)}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-xs text-zinc-500">No label types set for this packaging yet.</p>
+                        )}
+                      </div>
+                      {hasBulkSelection && (
+                        <label className="block text-xs text-zinc-600">
+                          Labels count (max {settings.labels_max_bulk})
+                          <input
+                            type="number"
+                            min={0}
+                            max={settings.labels_max_bulk}
+                            value={labelCountOverride}
+                            onChange={(e) => setLabelCountOverride(Number(e.target.value))}
+                            className="mt-1 w-full rounded-full border border-zinc-300 bg-white px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-700 shadow-sm transition focus:border-[#e91e63] focus:outline-none focus:ring-2 focus:ring-[#e91e63]/20"
+                          />
+                        </label>
+                      )}
+                      <div className="rounded-lg border border-zinc-200 bg-white p-3 text-xs text-zinc-700">
+                        <span className="block text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                          Artwork file
+                        </span>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <input
+                            id="label-artwork-upload"
+                            type="file"
+                            accept=".pdf,.jpg,.jpeg"
+                            onChange={(e) => handleLabelUpload(e.target.files?.[0])}
+                            className="sr-only"
+                          />
+                          <label
+                            htmlFor="label-artwork-upload"
+                            className="inline-flex items-center rounded-full border border-zinc-300 bg-white px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-700 shadow-sm transition hover:border-zinc-400"
+                          >
+                            {labelFileName ? "Change file" : "Choose file"}
+                          </label>
+                          {labelFileName && (
+                            <span className="text-xs text-zinc-500" title={labelFileName}>
+                              {labelFileName}
+                            </span>
+                          )}
+                          {labelImageUrl && (
+                            <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-700">
+                              Ready
+                            </span>
+                          )}
+                        </div>
+                        {labelImageError && (
+                          <span className="mt-1 block text-xs text-red-600">{labelImageError}</span>
+                        )}
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-semibold">Artwork size to fit</p>
-                      <p>Jars: round 35mm x 35mm</p>
-                      <p>Bags: rectangle 46mm x 26mm</p>
-                    </div>
-                    <label className="block text-xs text-zinc-600">
-                      Upload label artwork (PDF or JPG, max 2MB)
-                      <input
-                        type="file"
-                        accept=".pdf,.jpg,.jpeg"
-                        onChange={(e) => handleLabelUpload(e.target.files?.[0])}
-                        className="mt-1 w-full rounded border border-zinc-200 px-2 py-1"
+                  )}
+                </div>
+                <div className="space-y-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  <label className="group flex items-start gap-3 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={ingredientLabelsOptIn}
+                      onChange={(e) => setIngredientLabelsOptIn(e.target.checked)}
+                      className="mt-0.5 h-5 w-5 rounded border-zinc-300 text-[#e91e63] accent-[#e91e63] focus:ring-[#e91e63]"
+                    />
+                    <span className="flex-1 space-y-0.5">
+                      <span className="block text-sm font-semibold text-zinc-900">Ingredient labels</span>
+                      <span className="block text-xs text-zinc-500">
+                        Include ingredients and allergens with each pack.
+                      </span>
+                    </span>
+                  </label>
+                  {!ingredientPreviewFailed && (
+                    <div className="w-40 overflow-hidden rounded-lg border border-zinc-200 bg-white">
+                      <img
+                        src={INGREDIENT_LABEL_PREVIEW_SRC}
+                        alt="Ingredient label preview"
+                        className="h-auto w-full object-contain"
+                        loading="lazy"
+                        onError={() => setIngredientPreviewFailed(true)}
                       />
-                      {labelImageError && <span className="mt-1 block text-xs text-red-600">{labelImageError}</span>}
-                      {labelImageUrl && <span className="mt-1 block text-xs text-emerald-600">Label file ready.</span>}
-                    </label>
-                  </div>
-                )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1430,12 +1596,12 @@ export function QuoteBuilder({
                   }
                   mode={previewJacketMode}
                   showPinstripe={previewShowPinstripe}
-                  colorOne={jacketColorOne}
-                  colorTwo={jacketColorTwo}
+                  colorOne={previewJacketColorOne}
+                  colorTwo={previewJacketColorTwo}
                   showHeart={isWedding}
                   logoUrl={isBranded ? logoUrl : undefined}
-                  heartColor={heartColor}
-                  textColor={textColor}
+                  heartColor={previewHeartColor}
+                  textColor={previewTextColor}
                   isInitials={isWeddingInitials}
                   dimensions={{ width: 420, height: 312 }}
                 />
@@ -1493,6 +1659,7 @@ export function QuoteBuilder({
                       onChange={setHeartColor}
                       groups={paletteGroups}
                       onCustom={() => openCustomPicker("heart", heartColor)}
+                      placeholderSwatch={defaultTextColor}
                     />
                   </div>
                 )}
@@ -1518,6 +1685,7 @@ export function QuoteBuilder({
                     onChange={setTextColor}
                     groups={paletteGroups}
                     onCustom={() => openCustomPicker("text", textColor)}
+                    placeholderSwatch={defaultTextColor}
                   />
                 </div>
               )}
@@ -1585,6 +1753,7 @@ export function QuoteBuilder({
                         onChange={setJacketColorOne}
                         groups={paletteGroups}
                         onCustom={() => openCustomPicker("jacket1", jacketColorOne)}
+                        placeholderSwatch={defaultJacketColor}
                       />
                       {showColourTwo && (
                         <PalettePicker
@@ -1593,6 +1762,7 @@ export function QuoteBuilder({
                           onChange={setJacketColorTwo}
                           groups={paletteGroups}
                           onCustom={() => openCustomPicker("jacket2", jacketColorTwo)}
+                          placeholderSwatch={defaultJacketColor}
                         />
                       )}
                     </div>
@@ -1734,6 +1904,7 @@ export function QuoteBuilder({
                     jarLidColor: isJarOption ? jarLidColor || null : null,
                     labelsCount,
                     labelImageUrl: labelsOptIn ? labelImageUrl || null : null,
+                    labelTypeId: labelsOptIn ? labelTypeId || null : null,
                     ingredientLabelsOptIn,
                     jacket: jacketValue,
                     jacketType: previewJacketMode || null,
@@ -1976,5 +2147,3 @@ export function QuoteBuilder({
     </div>
   );
 }
-
-

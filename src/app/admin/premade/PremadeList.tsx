@@ -48,11 +48,16 @@ function SortablePremadeItem({
 export function PremadeList({ items, flavorOptions }: Props) {
   const [list, setList] = useState<PremadeAdminItem[]>(items);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [isClient, setIsClient] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   useEffect(() => {
     setList(items);
   }, [items]);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   const handleToggleActive = async (id: string, nextActive: boolean) => {
     setActionError(null);
@@ -86,20 +91,34 @@ export function PremadeList({ items, flavorOptions }: Props) {
   return (
     <div className="space-y-3">
       {actionError ? <p className="text-xs text-red-600">{actionError}</p> : null}
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-          <div className="space-y-3">
-            {list.map((item) => (
-              <SortablePremadeItem
-                key={item.id}
-                item={item}
-                flavorOptions={flavorOptions}
-                onToggleActive={handleToggleActive}
-              />
-            ))}
-          </div>
-        </SortableContext>
-      </DndContext>
+      {isClient ? (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+            <div className="space-y-3">
+              {list.map((item) => (
+                <SortablePremadeItem
+                  key={item.id}
+                  item={item}
+                  flavorOptions={flavorOptions}
+                  onToggleActive={handleToggleActive}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
+      ) : (
+        <div className="space-y-3">
+          {list.map((item) => (
+            <EditPremadeItem
+              key={item.id}
+              item={item}
+              imageUrl={item.imageUrl}
+              flavorOptions={flavorOptions}
+              onToggleActive={handleToggleActive}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -82,6 +82,7 @@ export async function upsertPackaging(formData: FormData) {
   const candy_weight_g = Number(formData.get("candy_weight_g"));
   const allowed_categories = parseList(formData.get("allowed_categories")?.toString() ?? "");
   const lid_colors = parseList(formData.get("lid_colors")?.toString() ?? "");
+  const label_type_ids = parseList(formData.get("label_type_ids")?.toString() ?? "");
   const unit_price = Number(formData.get("unit_price"));
   const max_packages = Number(formData.get("max_packages"));
 
@@ -100,6 +101,7 @@ export async function upsertPackaging(formData: FormData) {
         candy_weight_g,
         allowed_categories,
         lid_colors: normalizedLids,
+        label_type_ids,
         unit_price,
         max_packages,
       })
@@ -114,6 +116,7 @@ export async function upsertPackaging(formData: FormData) {
         candy_weight_g,
         allowed_categories,
         lid_colors: normalizedLids,
+        label_type_ids,
         unit_price,
         max_packages,
       });

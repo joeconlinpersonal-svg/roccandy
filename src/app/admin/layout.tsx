@@ -28,7 +28,10 @@ const navSections = [
   },
   {
     label: "Packaging",
-    items: [{ label: "Packaging Options & Pricing", href: "/admin/packaging" }],
+    items: [
+      { label: "Packaging Options & Pricing", href: "/admin/packaging" },
+      { label: "Labels", href: "/admin/packaging/labels" },
+    ],
   },
   {
     label: "Site settings",

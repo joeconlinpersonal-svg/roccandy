@@ -2,6 +2,11 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import {
+  DEFAULT_GOOGLE_PRODUCT_CATEGORY,
+  DEFAULT_PREMADE_BRAND,
+  DEFAULT_PRODUCT_CONDITION,
+} from "@/lib/premadeDefaults";
 import { supabaseClient } from "@/lib/supabase/client";
 import { createPremadeUploadUrl, insertPremadeCandy } from "./actions";
 
@@ -21,6 +26,7 @@ export function AddPremadeForm({ flavorOptions }: Props) {
   const [success, setSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedFlavors, setSelectedFlavors] = useState<string[]>([]);
+  const [showProductFields, setShowProductFields] = useState(false);
 
   const toggleFlavor = (flavorName: string) => {
     setSelectedFlavors((prev) => {
@@ -51,6 +57,12 @@ export function AddPremadeForm({ flavorOptions }: Props) {
     const file = formData.get("image");
     const greatValue = formData.get("great_value") === "on";
     const flavors = selectedFlavors.includes("Mixed") ? ["Mixed"] : selectedFlavors;
+    const sku = String(formData.get("sku") || "").trim();
+    const shortDescription = String(formData.get("short_description") || "").trim();
+    const brand = String(formData.get("brand") || "").trim();
+    const googleProductCategory = String(formData.get("google_product_category") || "").trim();
+    const productCondition = String(formData.get("product_condition") || "").trim();
+    const salePriceRaw = String(formData.get("sale_price") || "").trim();
 
     if (!name) {
       setError({ message: "Name is required." });
@@ -76,6 +88,14 @@ export function AddPremadeForm({ flavorOptions }: Props) {
       setError({ message: "Approx pcs must be greater than 0." });
       return;
     }
+    const sale_price = salePriceRaw ? Number(salePriceRaw) : null;
+    if (salePriceRaw && (!Number.isFinite(sale_price) || sale_price < 0)) {
+      setError({ message: "Sale price must be zero or greater." });
+      return;
+    }
+    const resolvedBrand = brand || DEFAULT_PREMADE_BRAND;
+    const resolvedCategory = googleProductCategory || DEFAULT_GOOGLE_PRODUCT_CATEGORY;
+    const resolvedCondition = productCondition || DEFAULT_PRODUCT_CONDITION;
     if (!(file instanceof File) || file.size === 0) {
       setError({ message: "Image is required." });
       return;
@@ -117,10 +137,16 @@ export function AddPremadeForm({ flavorOptions }: Props) {
         description,
         weight_g,
         price,
+        sale_price,
         approx_pcs,
         image_path: data.path,
         flavors: flavors.length ? flavors : null,
         great_value: greatValue,
+        sku: sku || null,
+        short_description: shortDescription || null,
+        brand: resolvedBrand,
+        google_product_category: resolvedCategory,
+        product_condition: resolvedCondition,
       });
       if (insertError) {
         throw new Error(insertError);
@@ -128,6 +154,7 @@ export function AddPremadeForm({ flavorOptions }: Props) {
 
       form.reset();
       setSelectedFlavors([]);
+      setShowProductFields(false);
       setSuccess("Pre-made candy added.");
       router.refresh();
     } catch (err) {
@@ -249,6 +276,82 @@ export function AddPremadeForm({ flavorOptions }: Props) {
         />
         <span className="mt-1 block text-[11px] text-zinc-500">PNG or JPG, max {MAX_IMAGE_SIZE_MB}MB.</span>
       </label>
+      <div className="space-y-2">
+        <button
+          type="button"
+          data-neutral-button
+          onClick={() => setShowProductFields((prev) => !prev)}
+          className="rounded-md px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em]"
+        >
+          {showProductFields ? "Hide product fields" : "Add product fields"}
+        </button>
+        {showProductFields && (
+          <div className="grid gap-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3 sm:grid-cols-2">
+            <label className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">
+              SKU
+              <input
+                type="text"
+                name="sku"
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
+                placeholder="Optional"
+              />
+            </label>
+            <label className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">
+              Brand
+              <input
+                type="text"
+                name="brand"
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
+                defaultValue={DEFAULT_PREMADE_BRAND}
+              />
+            </label>
+            <label className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 sm:col-span-2">
+              Short description
+              <textarea
+                name="short_description"
+                rows={2}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
+                placeholder="Optional summary for Google/feeds."
+              />
+            </label>
+            <label className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 sm:col-span-2">
+              Google product category
+              <input
+                type="text"
+                name="google_product_category"
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
+                defaultValue={DEFAULT_GOOGLE_PRODUCT_CATEGORY}
+              />
+            </label>
+            <label className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">
+              Condition
+              <select
+                name="product_condition"
+                defaultValue={DEFAULT_PRODUCT_CONDITION}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
+              >
+                <option value="new">New</option>
+                <option value="used">Used</option>
+                <option value="refurbished">Refurbished</option>
+              </select>
+            </label>
+            <label className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">
+              Sale price (AUD)
+              <input
+                type="number"
+                name="sale_price"
+                min="0"
+                step="0.01"
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm"
+                placeholder="Optional"
+              />
+            </label>
+            <div className="sm:col-span-2 text-[11px] text-zinc-500">
+              Availability is tied to the Active/Inactive toggle.
+            </div>
+          </div>
+        )}
+      </div>
       <button
         type="submit"
         disabled={isSubmitting}

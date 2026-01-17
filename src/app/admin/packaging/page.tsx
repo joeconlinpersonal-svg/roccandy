@@ -1,4 +1,4 @@
-import { getCategories, getPackagingOptionImages, getPackagingOptions, getSettings } from "@/lib/data";
+import { getCategories, getLabelTypes, getPackagingOptionImages, getPackagingOptions, getSettings } from "@/lib/data";
 import { PackagingTable } from "./PackagingTable";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -14,11 +14,12 @@ export default async function PackagingPage() {
     redirect("/admin/login");
   }
 
-  const [options, categories, images, settings] = await Promise.all([
+  const [options, categories, images, settings, labelTypes] = await Promise.all([
     getPackagingOptions(),
     getCategories(),
     getPackagingOptionImages(),
     getSettings(),
+    getLabelTypes(),
   ]);
 
   return (
@@ -35,6 +36,7 @@ export default async function PackagingPage() {
         categories={categories}
         images={images}
         maxTotalKg={Number(settings?.max_total_kg ?? 0)}
+        labelTypes={labelTypes}
       />
     </section>
   );

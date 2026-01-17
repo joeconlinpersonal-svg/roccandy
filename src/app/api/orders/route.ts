@@ -23,6 +23,7 @@ type OrderPayload = {
   paymentMethod?: string;
   logoUrl?: string;
   labelImageUrl?: string;
+  labelTypeId?: string;
   notes?: string;
   customerName?: string;
   customerEmail?: string;
@@ -122,6 +123,7 @@ export async function POST(req: Request) {
       payment_method: body.paymentMethod ?? null,
       logo_url: body.logoUrl ?? null,
       label_image_url: body.labelImageUrl ?? null,
+      label_type_id: body.labelTypeId ?? null,
       notes: body.notes?.trim() || null,
       due_date,
       total_weight_kg: totalWeightKg,

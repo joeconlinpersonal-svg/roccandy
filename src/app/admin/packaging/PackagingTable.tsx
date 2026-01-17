@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { Category, PackagingOption, PackagingOptionImage } from "@/lib/data";
+import type { Category, LabelType, PackagingOption, PackagingOptionImage } from "@/lib/data";
 import { deletePackaging, upsertPackaging, uploadPackagingImage } from "./actions";
 
 type Props = {
@@ -9,6 +9,7 @@ type Props = {
   categories: Category[];
   images: PackagingOptionImage[];
   maxTotalKg: number;
+  labelTypes: LabelType[];
 };
 
 type ComboSortKey = "key" | "category" | "type" | "size" | "lid" | "image";
@@ -21,6 +22,11 @@ function toCategoryString(arr: string[]) {
 const LID_OPTIONS = ["black", "silver", "gold"] as const;
 const DEFAULT_TYPES = ["Clear Bag", "Zip Bag", "Jar", "Cone", "Bulk"];
 const PACKAGING_IMAGE_BUCKET = "packaging-images";
+const LABEL_SHAPES: Array<{ value: LabelType["shape"]; label: string }> = [
+  { value: "square", label: "Square" },
+  { value: "rectangular", label: "Rectangular" },
+  { value: "circle", label: "Circle" },
+];
 const ORDER_IMAGE_PREFIX: Record<string, string> = {
   "weddings-initials": "initials",
   "weddings-both-names": "names",
@@ -85,6 +91,12 @@ function formatSizeLabel(type: string, size: string) {
   return withoutGrams || trimmed;
 }
 
+function formatLabelType(type: Pick<LabelType, "shape" | "dimensions">) {
+  const shapeLabel = LABEL_SHAPES.find((shape) => shape.value === type.shape)?.label ?? type.shape;
+  const dimension = (type.dimensions || "").trim();
+  return dimension ? `${shapeLabel} ${dimension}` : shapeLabel;
+}
+
 function buildComboKey(type: string, size: string, categoryId: string, lidColor: string) {
   const orderPrefix = resolveOrderPrefix(categoryId);
   const typeSlug = resolvePackagingTypeSlug(type);
@@ -94,13 +106,15 @@ function buildComboKey(type: string, size: string, categoryId: string, lidColor:
   return parts.join("_");
 }
 
-export function PackagingTable({ options, categories, images, maxTotalKg }: Props) {
+export function PackagingTable({ options, categories, images, maxTotalKg, labelTypes }: Props) {
   const [editMode, setEditMode] = useState(false);
   const [comboSort, setComboSort] = useState<{ key: ComboSortKey; direction: SortDirection } | null>(null);
   const [allowedSelections, setAllowedSelections] = useState<Record<string, string[]>>({});
   const [newAllowed, setNewAllowed] = useState<string[]>([]);
   const [lidSelections, setLidSelections] = useState<Record<string, string[]>>({});
   const [newLids, setNewLids] = useState<string[]>([]);
+  const [labelSelections, setLabelSelections] = useState<Record<string, string[]>>({});
+  const [newLabelSelections, setNewLabelSelections] = useState<string[]>([]);
   const [typeValues, setTypeValues] = useState<Record<string, string>>({});
   const [sizeValues, setSizeValues] = useState<Record<string, string>>({});
   const [customTypeMode, setCustomTypeMode] = useState<Record<string, boolean>>({});
@@ -132,6 +146,11 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
     });
     return map;
   }, [options]);
+  const labelTypeById = useMemo(() => {
+    const map = new Map<string, LabelType>();
+    labelTypes.forEach((labelType) => map.set(labelType.id, labelType));
+    return map;
+  }, [labelTypes]);
   const categoryNameById = useMemo(() => {
     const map = new Map<string, string>();
     categories.forEach((cat) => map.set(cat.id, cat.name));
@@ -145,6 +164,14 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
     });
     return map;
   }, [images]);
+  const sortedOptions = useMemo(() => {
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    return [...options].sort((a, b) => {
+      const typeCompare = collator.compare(a.type ?? "", b.type ?? "");
+      if (typeCompare !== 0) return typeCompare;
+      return collator.compare(a.size ?? "", b.size ?? "");
+    });
+  }, [options]);
   const comboRows = useMemo(() => {
     const rows = options.flatMap((opt) => {
       const isJar = opt.type.toLowerCase().includes("jar");
@@ -227,6 +254,7 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
   useEffect(() => {
     const initial: Record<string, string[]> = {};
     const initialLids: Record<string, string[]> = {};
+    const initialLabels: Record<string, string[]> = {};
     const initialTypes: Record<string, string> = {};
     const initialSizes: Record<string, string> = {};
     const initialTypeCustom: Record<string, boolean> = {};
@@ -234,6 +262,7 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
     options.forEach((opt) => {
       initial[opt.id] = opt.allowed_categories;
       initialLids[opt.id] = opt.lid_colors ?? [];
+      initialLabels[opt.id] = opt.label_type_ids ?? [];
       initialTypes[opt.id] = opt.type;
       initialSizes[opt.id] = opt.size;
       initialTypeCustom[opt.id] = !typeOptions.includes(opt.type);
@@ -244,8 +273,10 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAllowedSelections(initial);
     setLidSelections(initialLids);
+    setLabelSelections(initialLabels);
     setNewAllowed([]);
     setNewLids([]);
+    setNewLabelSelections([]);
     setTypeValues(initialTypes);
     setSizeValues(initialSizes);
     setCustomTypeMode(initialTypeCustom);
@@ -294,6 +325,16 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
     markDirty(id);
   };
 
+  const toggleLabelType = (id: string, labelId: string) => {
+    setLabelSelections((prev) => {
+      const current = prev[id] ?? [];
+      const exists = current.includes(labelId);
+      const next = exists ? current.filter((c) => c !== labelId) : [...current, labelId];
+      return { ...prev, [id]: next };
+    });
+    markDirty(id);
+  };
+
   const sameList = (a: string[], b: string[]) =>
     a.length === b.length && a.every((value) => b.includes(value));
 
@@ -315,12 +356,14 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
       );
       const allowed_categories = allowedSelections[opt.id] ?? [];
       const lid_colors = lidSelections[opt.id] ?? [];
+      const label_type_ids = labelSelections[opt.id] ?? [];
       const original = originalMap.get(opt.id);
       const allowedSame =
         original &&
         allowed_categories.length === original.allowed_categories.length &&
         allowed_categories.every((c) => original.allowed_categories.includes(c));
       const lidSame = original ? sameList(lid_colors, original.lid_colors ?? []) : false;
+      const labelSame = original ? sameList(label_type_ids, original.label_type_ids ?? []) : false;
       const isSame =
         original &&
         original.type === type &&
@@ -329,7 +372,8 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
         Number(original.unit_price) === unit_price &&
         Number(original.max_packages) === max_packages &&
         allowedSame &&
-        lidSame;
+        lidSame &&
+        labelSame;
       if (!isSame) next.add(opt.id);
     });
     // Handle new row: if any field filled or any allowed selected, mark dirty
@@ -342,8 +386,9 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
       const max = (newForm.elements.namedItem("max_packages") as HTMLInputElement | null)?.value ?? "";
       const hasAllowed = newAllowed.length > 0;
       const hasLids = newLids.length > 0;
+      const hasLabels = newLabelSelections.length > 0;
       const anyField = [type, size, candy, unit, max].some((v) => v !== "");
-      if (anyField || hasAllowed || hasLids) next.add("new");
+      if (anyField || hasAllowed || hasLids || hasLabels) next.add("new");
       else next.delete("new");
     }
     setDirtyIds(next);
@@ -356,10 +401,12 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
   }, [
     allowedSelections,
     lidSelections,
+    labelSelections,
     typeValues,
     sizeValues,
     newAllowed,
     newLids,
+    newLabelSelections,
     newTypeValue,
     newSizeValue,
     editMode,
@@ -464,18 +511,17 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
             <thead>
               <tr className="text-left text-zinc-500">
                 <th className="px-2 py-2">Type</th>
-                <th className="px-2 py-2">Size</th>
                 <th className="px-2 py-2">Candy weight (g)</th>
                 <th className="px-2 py-2">Allowed categories</th>
+                <th className="px-2 py-2">Labels</th>
                 <th className="px-2 py-2">Jar lid colours</th>
                 <th className="px-2 py-2">Unit price</th>
                 <th className="px-2 py-2">Max packages</th>
                 <th className="px-2 py-2 text-center">Weight check</th>
-                {editMode && <th className="px-2 py-2 w-24">Actions</th>}
               </tr>
             </thead>
             <tbody>
-              {options.map((opt) => {
+              {sortedOptions.map((opt) => {
                 const formId = `pack-${opt.id}`;
                 const typeValue = typeValues[opt.id] ?? opt.type ?? "";
                 const sizeValue = sizeValues[opt.id] ?? opt.size ?? "";
@@ -490,133 +536,167 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
                 const isLowUtilization =
                   Number.isFinite(maxKg) && maxKg > 0 ? weightLimitKg < maxKg * 0.9 : false;
                 const maxPackagesInputId = `max-packages-${opt.id}`;
+                const selectedLabelIds = editMode
+                  ? labelSelections[opt.id] ?? []
+                  : opt.label_type_ids ?? [];
+                const selectedLabelLabels = selectedLabelIds
+                  .map((labelId) => {
+                    const labelType = labelTypeById.get(labelId);
+                    return labelType ? formatLabelType(labelType) : labelId;
+                  })
+                  .filter(Boolean);
                 const handleMaxPackagesEdit = () => {
                   if (!editMode) setEditMode(true);
                   setFocusMaxPackagesId(opt.id);
                 };
                 return (
-                  <tr key={opt.id} className="border-t border-zinc-100">
-                    <td className="px-2 py-2 align-middle whitespace-normal">
+                  <tr key={opt.id} className={`border-t border-zinc-100 ${editMode ? "relative" : ""}`}>
+                    <td className="px-2 py-2 align-top whitespace-normal">
                       {editMode ? (
-                        <div className="space-y-1">
-                          {!typeIsCustom ? (
-                            <select
-                              value={typeValue}
-                              onChange={(event) => {
-                                const next = event.target.value;
-                                if (next === "__custom__") {
-                                  setCustomTypeMode((prev) => ({ ...prev, [opt.id]: true }));
-                                  setTypeValues((prev) => ({ ...prev, [opt.id]: "" }));
-                                  return;
-                                }
-                                setCustomTypeMode((prev) => ({ ...prev, [opt.id]: false }));
-                                setTypeValues((prev) => ({ ...prev, [opt.id]: next }));
-                                const sizesForType = sizeOptionsByType.get(next) ?? [];
-                                if (sizesForType.length > 0 && !sizesForType.includes(sizeValue)) {
-                                  setSizeValues((prev) => ({ ...prev, [opt.id]: sizesForType[0] }));
-                                  setCustomSizeMode((prev) => ({ ...prev, [opt.id]: false }));
-                                }
-                                if (!next.toLowerCase().includes("jar")) {
-                                  setLidSelections((prev) => ({ ...prev, [opt.id]: [] }));
-                                }
-                              }}
-                              className="w-full rounded border border-zinc-200 px-2 py-1"
-                            >
-                              {typeOptions.map((type) => (
-                                <option key={type} value={type}>
-                                  {type}
-                                </option>
-                              ))}
-                              <option value="__custom__">Custom...</option>
-                            </select>
-                          ) : (
-                            <div className="space-y-1">
-                              <input
-                                type="text"
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            {!typeIsCustom ? (
+                              <select
                                 value={typeValue}
                                 onChange={(event) => {
                                   const next = event.target.value;
+                                  if (next === "__custom__") {
+                                    setCustomTypeMode((prev) => ({ ...prev, [opt.id]: true }));
+                                    setTypeValues((prev) => ({ ...prev, [opt.id]: "" }));
+                                    return;
+                                  }
+                                  setCustomTypeMode((prev) => ({ ...prev, [opt.id]: false }));
                                   setTypeValues((prev) => ({ ...prev, [opt.id]: next }));
+                                  const sizesForType = sizeOptionsByType.get(next) ?? [];
+                                  if (sizesForType.length > 0 && !sizesForType.includes(sizeValue)) {
+                                    setSizeValues((prev) => ({ ...prev, [opt.id]: sizesForType[0] }));
+                                    setCustomSizeMode((prev) => ({ ...prev, [opt.id]: false }));
+                                  }
                                   if (!next.toLowerCase().includes("jar")) {
                                     setLidSelections((prev) => ({ ...prev, [opt.id]: [] }));
                                   }
                                 }}
                                 className="w-full rounded border border-zinc-200 px-2 py-1"
-                                placeholder="Type"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setCustomTypeMode((prev) => ({ ...prev, [opt.id]: false }));
-                                  const fallback = opt.type || typeOptions[0] || "";
-                                  setTypeValues((prev) => ({ ...prev, [opt.id]: fallback }));
-                                }}
-                                className="text-[11px] font-semibold text-zinc-500 underline"
                               >
-                                Use dropdown
-                              </button>
-                            </div>
-                          )}
-                          <input form={formId} type="hidden" name="type" value={typeValue} readOnly />
-                        </div>
-                      ) : (
-                        typeValue
-                      )}
-                    </td>
-                    <td className="px-2 py-2 align-middle whitespace-normal">
-                      {editMode ? (
-                        <div className="space-y-1">
-                          {!sizeIsCustom ? (
-                            <select
-                              value={sizeValue}
-                              onChange={(event) => {
-                                const next = event.target.value;
-                                if (next === "__custom__") {
-                                  setCustomSizeMode((prev) => ({ ...prev, [opt.id]: true }));
-                                  setSizeValues((prev) => ({ ...prev, [opt.id]: "" }));
-                                  return;
-                                }
-                                setCustomSizeMode((prev) => ({ ...prev, [opt.id]: false }));
-                                setSizeValues((prev) => ({ ...prev, [opt.id]: next }));
-                              }}
-                              className="w-full rounded border border-zinc-200 px-2 py-1"
-                            >
-                              {sizeOptions.map((size) => (
-                                <option key={size} value={size}>
-                                  {formatSizeLabel(typeValue, size)}
-                                </option>
-                              ))}
-                              <option value="__custom__">Custom...</option>
-                            </select>
-                          ) : (
-                            <div className="space-y-1">
-                              <input
-                                type="text"
-                                value={sizeValue}
-                                onChange={(event) =>
-                                  setSizeValues((prev) => ({ ...prev, [opt.id]: event.target.value }))
-                                }
-                                className="w-full rounded border border-zinc-200 px-2 py-1"
-                                placeholder="Size"
-                              />
-                              {sizeOptions.length > 0 && (
+                                {typeOptions.map((type) => (
+                                  <option key={type} value={type}>
+                                    {type}
+                                  </option>
+                                ))}
+                                <option value="__custom__">Custom...</option>
+                              </select>
+                            ) : (
+                              <div className="space-y-1">
+                                <input
+                                  type="text"
+                                  value={typeValue}
+                                  onChange={(event) => {
+                                    const next = event.target.value;
+                                    setTypeValues((prev) => ({ ...prev, [opt.id]: next }));
+                                    if (!next.toLowerCase().includes("jar")) {
+                                      setLidSelections((prev) => ({ ...prev, [opt.id]: [] }));
+                                    }
+                                  }}
+                                  className="w-full rounded border border-zinc-200 px-2 py-1"
+                                  placeholder="Type"
+                                />
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    setCustomSizeMode((prev) => ({ ...prev, [opt.id]: false }));
-                                    setSizeValues((prev) => ({ ...prev, [opt.id]: sizeOptions[0] ?? "" }));
+                                    setCustomTypeMode((prev) => ({ ...prev, [opt.id]: false }));
+                                    const fallback = opt.type || typeOptions[0] || "";
+                                    setTypeValues((prev) => ({ ...prev, [opt.id]: fallback }));
                                   }}
                                   className="text-[11px] font-semibold text-zinc-500 underline"
                                 >
                                   Use dropdown
                                 </button>
-                              )}
-                            </div>
-                          )}
-                          <input form={formId} type="hidden" name="size" value={sizeValue} readOnly />
+                              </div>
+                            )}
+                            <input form={formId} type="hidden" name="type" value={typeValue} readOnly />
+                          </div>
+                          <div className="space-y-1">
+                            {!sizeIsCustom ? (
+                              <select
+                                value={sizeValue}
+                                onChange={(event) => {
+                                  const next = event.target.value;
+                                  if (next === "__custom__") {
+                                    setCustomSizeMode((prev) => ({ ...prev, [opt.id]: true }));
+                                    setSizeValues((prev) => ({ ...prev, [opt.id]: "" }));
+                                    return;
+                                  }
+                                  setCustomSizeMode((prev) => ({ ...prev, [opt.id]: false }));
+                                  setSizeValues((prev) => ({ ...prev, [opt.id]: next }));
+                                }}
+                                className="w-full rounded border border-zinc-200 px-2 py-1"
+                              >
+                                {sizeOptions.map((size) => (
+                                  <option key={size} value={size}>
+                                    {formatSizeLabel(typeValue, size)}
+                                  </option>
+                                ))}
+                                <option value="__custom__">Custom...</option>
+                              </select>
+                            ) : (
+                              <div className="space-y-1">
+                                <input
+                                  type="text"
+                                  value={sizeValue}
+                                  onChange={(event) =>
+                                    setSizeValues((prev) => ({ ...prev, [opt.id]: event.target.value }))
+                                  }
+                                  className="w-full rounded border border-zinc-200 px-2 py-1"
+                                  placeholder="Size"
+                                />
+                                {sizeOptions.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCustomSizeMode((prev) => ({ ...prev, [opt.id]: false }));
+                                      setSizeValues((prev) => ({ ...prev, [opt.id]: sizeOptions[0] ?? "" }));
+                                    }}
+                                    className="text-[11px] font-semibold text-zinc-500 underline"
+                                  >
+                                    Use dropdown
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                            <input form={formId} type="hidden" name="size" value={sizeValue} readOnly />
+                          </div>
                         </div>
                       ) : (
-                        formatSizeLabel(typeValue, sizeValue)
+                        <div className="space-y-1">
+                          <div className="font-semibold text-zinc-900">{typeValue || "-"}</div>
+                          <div className="text-xs text-zinc-500">
+                            {formatSizeLabel(typeValue, sizeValue) || "-"}
+                          </div>
+                        </div>
+                      )}
+                      {editMode && (
+                        <>
+                          <form
+                            id={formId}
+                            data-pack-form
+                            data-id={opt.id}
+                            data-new="false"
+                            action={upsertPackaging}
+                            className="hidden"
+                          >
+                            <input type="hidden" name="id" value={opt.id} />
+                          </form>
+                          <form action={deletePackaging} className="absolute right-2 top-2">
+                            <input type="hidden" name="id" value={opt.id} />
+                            <button
+                              type="submit"
+                              aria-label="Delete"
+                              className="inline-flex h-6 w-6 items-center justify-center rounded-full text-red-500 hover:bg-red-50 hover:text-red-700"
+                            >
+                              ×
+                            </button>
+                          </form>
+                        </>
                       )}
                     </td>
                     <td className="px-2 py-2 align-middle whitespace-normal">
@@ -663,6 +743,46 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
                         </div>
                       ) : (
                         <span className="text-zinc-600">{toCategoryString(opt.allowed_categories)}</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-2 align-middle whitespace-normal">
+                      {editMode ? (
+                        <div className="space-y-1 rounded border border-zinc-200 p-2">
+                          <input
+                            form={formId}
+                            type="hidden"
+                            name="label_type_ids"
+                            value={(labelSelections[opt.id] ?? []).join(",")}
+                            readOnly
+                          />
+                          {labelTypes.length > 0 ? (
+                            <div className="flex flex-wrap gap-2 text-xs text-zinc-700">
+                              {labelTypes.map((labelType) => {
+                                const checked = (labelSelections[opt.id] ?? []).includes(labelType.id);
+                                return (
+                                  <label
+                                    key={labelType.id}
+                                    className="inline-flex items-center gap-1 rounded border border-zinc-200 px-2 py-1 hover:bg-zinc-50"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => toggleLabelType(opt.id, labelType.id)}
+                                      className="rounded border-zinc-300"
+                                    />
+                                    {formatLabelType(labelType)}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-zinc-400">Add label types in Packaging &gt; Labels</p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-zinc-600">
+                          {selectedLabelLabels.length > 0 ? selectedLabelLabels.join(", ") : "-"}
+                        </span>
                       )}
                     </td>
                     <td className="px-2 py-2 align-middle whitespace-normal">
@@ -791,168 +911,157 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
                         <span className="text-zinc-400">Set max total kg in settings</span>
                       )}
                     </td>
-                    {editMode && (
-                      <td className="px-2 py-2 space-y-1 align-middle whitespace-normal">
-                        <form
-                          id={formId}
-                          data-pack-form
-                          data-id={opt.id}
-                          data-new="false"
-                          action={upsertPackaging}
-                          className="hidden"
-                        >
-                          <input type="hidden" name="id" value={opt.id} />
-                        </form>
-                        <form action={deletePackaging}>
-                          <input type="hidden" name="id" value={opt.id} />
-                          <button
-                            type="submit"
-                            className="w-full rounded border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
-                          >
-                            Delete
-                          </button>
-                        </form>
-                      </td>
-                    )}
                   </tr>
                 );
               })}
               {editMode && (
                 <tr className="border-t border-zinc-100 bg-zinc-50/60">
-                    <td className="px-2 py-2 align-middle whitespace-normal">
-                    <div className="space-y-1">
-                      {!newTypeCustom ? (
-                        <select
-                          value={newTypeValue || (typeOptions[0] ?? "")}
-                          onChange={(event) => {
-                            const next = event.target.value;
-                            if (next === "__custom__") {
-                              setNewTypeCustom(true);
-                              setNewTypeValue("");
-                              setNewLids([]);
-                              return;
-                            }
-                            setNewTypeCustom(false);
-                            setNewTypeValue(next);
-                            if (!next.toLowerCase().includes("jar")) {
-                              setNewLids([]);
-                            }
-                            const sizesForType = sizeOptionsByType.get(next) ?? [];
-                            if (sizesForType.length > 0 && !sizesForType.includes(newSizeValue)) {
-                              setNewSizeValue(sizesForType[0]);
-                              setNewSizeCustom(false);
-                            }
-                            markDirty("new");
-                            recomputeDirty();
-                          }}
-                          className="w-full rounded border border-zinc-200 px-2 py-1"
-                        >
-                          {typeOptions.map((type) => (
-                            <option key={type} value={type}>
-                              {type}
-                            </option>
-                          ))}
-                          <option value="__custom__">Custom...</option>
-                        </select>
-                      ) : (
-                        <div className="space-y-1">
-                          <input
-                            type="text"
-                            value={newTypeValue}
+                  <td className="px-2 py-2 align-top whitespace-normal">
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        {!newTypeCustom ? (
+                          <select
+                            value={newTypeValue || (typeOptions[0] ?? "")}
                             onChange={(event) => {
                               const next = event.target.value;
+                              if (next === "__custom__") {
+                                setNewTypeCustom(true);
+                                setNewTypeValue("");
+                                setNewLids([]);
+                                return;
+                              }
+                              setNewTypeCustom(false);
                               setNewTypeValue(next);
                               if (!next.toLowerCase().includes("jar")) {
                                 setNewLids([]);
+                              }
+                              const sizesForType = sizeOptionsByType.get(next) ?? [];
+                              if (sizesForType.length > 0 && !sizesForType.includes(newSizeValue)) {
+                                setNewSizeValue(sizesForType[0]);
+                                setNewSizeCustom(false);
                               }
                               markDirty("new");
                               recomputeDirty();
                             }}
                             className="w-full rounded border border-zinc-200 px-2 py-1"
-                            placeholder="Type"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNewTypeCustom(false);
-                              setNewTypeValue(typeOptions[0] ?? "");
-                            }}
-                            className="text-[11px] font-semibold text-zinc-500 underline"
                           >
-                            Use dropdown
-                          </button>
-                        </div>
-                      )}
-                      <input
-                        form="pack-new"
-                        type="hidden"
-                        name="type"
-                        value={newTypeValue || (typeOptions[0] ?? "")}
-                        readOnly
-                      />
-                    </div>
-                  </td>
-                  <td className="px-2 py-2 align-middle whitespace-normal">
-                    <div className="space-y-1">
-                      {!newSizeCustom ? (
-                        <select
-                          value={newSizeValue || (sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? ""))?.[0] ?? "")}
-                          onChange={(event) => {
-                            const next = event.target.value;
-                            if (next === "__custom__") {
-                              setNewSizeCustom(true);
-                              setNewSizeValue("");
-                              return;
-                            }
-                            setNewSizeCustom(false);
-                            setNewSizeValue(next);
-                            markDirty("new");
-                            recomputeDirty();
-                          }}
-                          className="w-full rounded border border-zinc-200 px-2 py-1"
-                        >
-                          {(sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? "")) ?? []).map((size) => (
-                            <option key={size} value={size}>
-                              {formatSizeLabel(newTypeValue || (typeOptions[0] ?? ""), size)}
-                            </option>
-                          ))}
-                          <option value="__custom__">Custom...</option>
-                        </select>
-                      ) : (
-                        <div className="space-y-1">
-                          <input
-                            type="text"
-                            value={newSizeValue}
-                            onChange={(event) => {
-                              setNewSizeValue(event.target.value);
-                              markDirty("new");
-                              recomputeDirty();
-                            }}
-                            className="w-full rounded border border-zinc-200 px-2 py-1"
-                            placeholder="Size"
-                          />
-                          {(sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? "")) ?? []).length > 0 && (
+                            {typeOptions.map((type) => (
+                              <option key={type} value={type}>
+                                {type}
+                              </option>
+                            ))}
+                            <option value="__custom__">Custom...</option>
+                          </select>
+                        ) : (
+                          <div className="space-y-1">
+                            <input
+                              type="text"
+                              value={newTypeValue}
+                              onChange={(event) => {
+                                const next = event.target.value;
+                                setNewTypeValue(next);
+                                if (!next.toLowerCase().includes("jar")) {
+                                  setNewLids([]);
+                                }
+                                markDirty("new");
+                                recomputeDirty();
+                              }}
+                              className="w-full rounded border border-zinc-200 px-2 py-1"
+                              placeholder="Type"
+                            />
                             <button
                               type="button"
                               onClick={() => {
-                                setNewSizeCustom(false);
-                                setNewSizeValue(sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? ""))?.[0] ?? "");
+                                setNewTypeCustom(false);
+                                setNewTypeValue(typeOptions[0] ?? "");
                               }}
                               className="text-[11px] font-semibold text-zinc-500 underline"
                             >
                               Use dropdown
                             </button>
-                          )}
-                        </div>
-                      )}
-                      <input
-                        form="pack-new"
-                        type="hidden"
-                        name="size"
-                        value={newSizeValue || (sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? ""))?.[0] ?? "")}
-                        readOnly
-                      />
+                          </div>
+                        )}
+                        <input
+                          form="pack-new"
+                          type="hidden"
+                          name="type"
+                          value={newTypeValue || (typeOptions[0] ?? "")}
+                          readOnly
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        {!newSizeCustom ? (
+                          <select
+                            value={
+                              newSizeValue || (sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? ""))?.[0] ?? "")
+                            }
+                            onChange={(event) => {
+                              const next = event.target.value;
+                              if (next === "__custom__") {
+                                setNewSizeCustom(true);
+                                setNewSizeValue("");
+                                return;
+                              }
+                              setNewSizeCustom(false);
+                              setNewSizeValue(next);
+                              markDirty("new");
+                              recomputeDirty();
+                            }}
+                            className="w-full rounded border border-zinc-200 px-2 py-1"
+                          >
+                            {(sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? "")) ?? []).map((size) => (
+                              <option key={size} value={size}>
+                                {formatSizeLabel(newTypeValue || (typeOptions[0] ?? ""), size)}
+                              </option>
+                            ))}
+                            <option value="__custom__">Custom...</option>
+                          </select>
+                        ) : (
+                          <div className="space-y-1">
+                            <input
+                              type="text"
+                              value={newSizeValue}
+                              onChange={(event) => {
+                                setNewSizeValue(event.target.value);
+                                markDirty("new");
+                                recomputeDirty();
+                              }}
+                              className="w-full rounded border border-zinc-200 px-2 py-1"
+                              placeholder="Size"
+                            />
+                            {(sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? "")) ?? []).length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewSizeCustom(false);
+                                  setNewSizeValue(sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? ""))?.[0] ?? "");
+                                }}
+                                className="text-[11px] font-semibold text-zinc-500 underline"
+                              >
+                                Use dropdown
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        <input
+                          form="pack-new"
+                          type="hidden"
+                          name="size"
+                          value={
+                            newSizeValue || (sizeOptionsByType.get(newTypeValue || (typeOptions[0] ?? ""))?.[0] ?? "")
+                          }
+                          readOnly
+                        />
+                      </div>
                     </div>
+                    <form
+                      id="pack-new"
+                      data-pack-form
+                      data-id="new"
+                      data-new="true"
+                      action={upsertPackaging}
+                      className="hidden"
+                    />
                   </td>
                   <td className="px-3 py-2">
                     <input
@@ -1007,6 +1116,49 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
                         </div>
                       </div>
                     )}
+                  </td>
+                  <td className="px-2 py-2 align-middle whitespace-normal">
+                    <input
+                      form="pack-new"
+                      type="hidden"
+                      name="label_type_ids"
+                      value={newLabelSelections.join(",")}
+                      readOnly
+                    />
+                    <div className="space-y-1 rounded border border-zinc-200 p-2">
+                      {labelTypes.length > 0 ? (
+                        <div className="flex flex-wrap gap-2 text-xs text-zinc-700">
+                          {labelTypes.map((labelType) => {
+                            const checked = newLabelSelections.includes(labelType.id);
+                            return (
+                              <label
+                                key={labelType.id}
+                                className="inline-flex items-center gap-1 rounded border border-zinc-200 px-2 py-1 hover:bg-zinc-50"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() =>
+                                    setNewLabelSelections((prev) => {
+                                      const next = prev.includes(labelType.id)
+                                        ? prev.filter((id) => id !== labelType.id)
+                                        : [...prev, labelType.id];
+                                      markDirty("new");
+                                      recomputeDirty();
+                                      return next;
+                                    })
+                                  }
+                                  className="rounded border-zinc-300"
+                                />
+                                {formatLabelType(labelType)}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-zinc-400">Add label types in Packaging &gt; Labels</p>
+                      )}
+                    </div>
                   </td>
                   <td className="px-2 py-2 align-middle whitespace-normal">
                     <input
@@ -1073,9 +1225,6 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
                     />
                   </td>
                   <td className="px-2 py-2 align-middle whitespace-normal text-xs text-zinc-400">Save to check</td>
-                  <td className="px-2 py-2 align-middle whitespace-normal">
-                    <form id="pack-new" data-pack-form data-id="new" data-new="true" action={upsertPackaging} className="hidden" />
-                  </td>
                 </tr>
               )}
             </tbody>
@@ -1231,4 +1380,3 @@ export function PackagingTable({ options, categories, images, maxTotalKg }: Prop
     </>
   );
 }
-
