@@ -9,6 +9,16 @@ export const revalidate = 0;
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 
+const DEFAULT_NO_PRODUCTION_DAYS = [
+  { name: "no_production_mon", label: "Monday" },
+  { name: "no_production_tue", label: "Tuesday" },
+  { name: "no_production_wed", label: "Wednesday" },
+  { name: "no_production_thu", label: "Thursday" },
+  { name: "no_production_fri", label: "Friday" },
+  { name: "no_production_sat", label: "Saturday" },
+  { name: "no_production_sun", label: "Sunday" },
+] as const;
+
 async function updateProductionSettings(formData: FormData) {
   "use server";
 
@@ -212,20 +222,12 @@ export default async function SettingsProductionPage() {
           <h4 className="text-sm font-semibold text-zinc-900">Default no-production days</h4>
           <form action={updateDefaultNoProduction} className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
-              {[
-                { name: "no_production_mon", label: "Monday" },
-                { name: "no_production_tue", label: "Tuesday" },
-                { name: "no_production_wed", label: "Wednesday" },
-                { name: "no_production_thu", label: "Thursday" },
-                { name: "no_production_fri", label: "Friday" },
-                { name: "no_production_sat", label: "Saturday" },
-                { name: "no_production_sun", label: "Sunday" },
-              ].map((day) => (
+              {DEFAULT_NO_PRODUCTION_DAYS.map((day) => (
                 <label key={day.name} className="flex items-center gap-2 rounded border border-zinc-200 px-3 py-2 text-xs">
                   <input
                     type="checkbox"
                     name={day.name}
-                    defaultChecked={Boolean((settings as Record<string, boolean>)[day.name])}
+                    defaultChecked={Boolean(settings[day.name])}
                   />
                   <span>{day.label}</span>
                 </label>

@@ -181,15 +181,23 @@ export function EditPremadeItem({ item, imageUrl, flavorOptions, onToggleActive,
       setError("Price must be greater than 0.");
       return;
     }
-    const salePriceNumber = salePrice !== "" ? Number(salePrice) : null;
-    if (salePrice !== "" && (!Number.isFinite(salePriceNumber) || salePriceNumber < 0)) {
-      setError("Sale price must be zero or greater.");
-      return;
+    let salePriceNumber: number | null = null;
+    if (salePrice !== "") {
+      const parsedSale = Number(salePrice);
+      if (!Number.isFinite(parsedSale) || parsedSale < 0) {
+        setError("Sale price must be zero or greater.");
+        return;
+      }
+      salePriceNumber = parsedSale;
     }
-    const approx_pcs = approxPcs !== "" ? Number(approxPcs) : null;
-    if (approxPcs !== "" && (!Number.isFinite(approx_pcs) || approx_pcs <= 0)) {
-      setError("Approx pcs must be greater than 0.");
-      return;
+    let approx_pcs: number | null = null;
+    if (approxPcs !== "") {
+      const parsedApprox = Number(approxPcs);
+      if (!Number.isFinite(parsedApprox) || parsedApprox <= 0) {
+        setError("Approx pcs must be greater than 0.");
+        return;
+      }
+      approx_pcs = parsedApprox;
     }
 
     let image_path: string | undefined;

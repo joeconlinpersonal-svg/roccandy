@@ -94,7 +94,7 @@ export async function POST(req: Request) {
       }
     }
 
-    let payload = {
+    let payload: Record<string, unknown> = {
       order_number,
       title,
       order_description,
@@ -124,6 +124,8 @@ export async function POST(req: Request) {
       logo_url: body.logoUrl ?? null,
       label_image_url: body.labelImageUrl ?? null,
       label_type_id: body.labelTypeId ?? null,
+      text_color: body.categoryId !== "branded" ? body.textColor ?? null : null,
+      heart_color: body.categoryId?.startsWith("weddings") ? body.heartColor ?? null : null,
       notes: body.notes?.trim() || null,
       due_date,
       total_weight_kg: totalWeightKg,
@@ -134,12 +136,6 @@ export async function POST(req: Request) {
       state,
       location,
     };
-    if (body.categoryId !== "branded" && body.textColor) {
-      payload.text_color = body.textColor;
-    }
-    if (body.categoryId?.startsWith("weddings") && body.heartColor) {
-      payload.heart_color = body.heartColor;
-    }
 
     let data: { id: string; order_number: string | null } | null = null;
     let insertError: { code?: string | null; message?: string | null } | null = null;

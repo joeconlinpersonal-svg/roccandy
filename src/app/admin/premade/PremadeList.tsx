@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import type { DragEndEvent } from "@dnd-kit/core";
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { PremadeCandy } from "@/lib/data";
@@ -69,11 +70,14 @@ export function PremadeList({ items, flavorOptions }: Props) {
     }
   };
 
-  const handleDragEnd = async (event: { active: { id: string }; over: { id: string } | null }) => {
+  const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const oldIndex = list.findIndex((item) => item.id === active.id);
-    const newIndex = list.findIndex((item) => item.id === over.id);
+    if (!over) return;
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    if (activeId === overId) return;
+    const oldIndex = list.findIndex((item) => item.id === activeId);
+    const newIndex = list.findIndex((item) => item.id === overId);
     if (oldIndex === -1 || newIndex === -1) return;
     const next = arrayMove(list, oldIndex, newIndex).map((item, index) => ({
       ...item,

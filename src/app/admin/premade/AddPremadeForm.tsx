@@ -83,15 +83,23 @@ export function AddPremadeForm({ flavorOptions }: Props) {
       setError({ message: "Price must be greater than 0." });
       return;
     }
-    const approx_pcs = approxPcsRaw ? Number(approxPcsRaw) : null;
-    if (approxPcsRaw && (!Number.isFinite(approx_pcs) || approx_pcs <= 0)) {
-      setError({ message: "Approx pcs must be greater than 0." });
-      return;
+    let approx_pcs: number | null = null;
+    if (approxPcsRaw) {
+      const parsedApprox = Number(approxPcsRaw);
+      if (!Number.isFinite(parsedApprox) || parsedApprox <= 0) {
+        setError({ message: "Approx pcs must be greater than 0." });
+        return;
+      }
+      approx_pcs = parsedApprox;
     }
-    const sale_price = salePriceRaw ? Number(salePriceRaw) : null;
-    if (salePriceRaw && (!Number.isFinite(sale_price) || sale_price < 0)) {
-      setError({ message: "Sale price must be zero or greater." });
-      return;
+    let sale_price: number | null = null;
+    if (salePriceRaw) {
+      const parsedSale = Number(salePriceRaw);
+      if (!Number.isFinite(parsedSale) || parsedSale < 0) {
+        setError({ message: "Sale price must be zero or greater." });
+        return;
+      }
+      sale_price = parsedSale;
     }
     const resolvedBrand = brand || DEFAULT_PREMADE_BRAND;
     const resolvedCategory = googleProductCategory || DEFAULT_GOOGLE_PRODUCT_CATEGORY;
