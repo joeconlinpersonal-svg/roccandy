@@ -193,3 +193,50 @@ export async function upsertWooProduct(input: WooProductUpsertInput): Promise<{ 
 
   return { id: String(data.id) };
 }
+
+type WooOrderLineItem = {
+  product_id: number;
+  name?: string;
+  quantity: number;
+  total?: string;
+  meta_data?: Array<{ key: string; value: string }>;
+};
+
+type WooOrderAddress = {
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  phone?: string;
+  address_1?: string;
+  address_2?: string;
+  city?: string;
+  state?: string;
+  postcode?: string;
+  country?: string;
+};
+
+export type WooOrderCreateInput = {
+  status?: string;
+  set_paid?: boolean;
+  billing?: WooOrderAddress;
+  shipping?: WooOrderAddress;
+  customer_note?: string;
+  line_items: WooOrderLineItem[];
+  meta_data?: Array<{ key: string; value: string }>;
+};
+
+export async function createWooOrder(input: WooOrderCreateInput): Promise<{
+  id: number;
+  status: string;
+  order_key?: string;
+  payment_url?: string;
+}> {
+  const data = await wooRequest<{ id: number; status: string; order_key?: string; payment_url?: string }>(
+    "/wp-json/wc/v3/orders",
+    {
+      method: "POST",
+      body: input,
+    }
+  );
+  return data;
+}

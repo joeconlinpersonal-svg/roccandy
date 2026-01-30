@@ -86,26 +86,6 @@ function formatLabelTypeLabel(labelType?: LabelType | null) {
   return dimension ? `${shape} ${dimension}` : shape;
 }
 
-type QuoteOrderRef = {
-  id?: string | null;
-  orderNumber?: string | null;
-  title?: string | null;
-};
-
-function buildQuoteOrderLabel(orders: QuoteOrderRef[]) {
-  const labels = orders
-    .map((order) => {
-      if (order.orderNumber) return `#${order.orderNumber}`;
-      const title = order.title?.trim();
-      if (title) return title;
-      const id = order.id?.trim();
-      return id ? `#${id.slice(0, 8)}` : "";
-    })
-    .filter(Boolean);
-  const uniqueLabels = Array.from(new Set(labels));
-  if (uniqueLabels.length === 0) return "";
-  return `Quote order${uniqueLabels.length > 1 ? "s" : ""}: ${uniqueLabels.join(", ")}`;
-}
 
 const isDateBlocked = (dateKey: string, blocks: QuoteBlock[]) => {
   return blocks.some((block) => dateKey >= block.start_date && dateKey <= block.end_date);
@@ -123,18 +103,6 @@ const buildDateKey = (date: Date) => {
 const formatMonthLabel = (date: Date) =>
   date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
 
-async function fetchOrderNumber() {
-  const response = await fetch("/api/orders/number");
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || "Unable to generate order number");
-  }
-  const data = (await response.json()) as { orderNumber?: string };
-  if (!data.orderNumber) {
-    throw new Error("Order number missing");
-  }
-  return data.orderNumber;
-}
 
 function normalizeHex(value: string) {
   const trimmed = value.trim();
@@ -824,7 +792,7 @@ export function CheckoutClient({
     }
     if (hasCustomItems && !dueDate) missing.push("date required");
     if (hasCustomItems && isDueDateBlocked) missing.push("available date");
-    if (!paymentMethod) missing.push("payment method");
+    // Payment is selected in Woo checkout; this is only a preference.
     if (!firstName.trim()) missing.push("first name");
     if (!lastName.trim()) missing.push("surname");
     if (!email.trim()) missing.push("email address");
@@ -852,161 +820,66 @@ export function CheckoutClient({
 
     setPlacing(true);
     try {
-      const resolvedPricing = new Map<string, PricingBreakdown | null>();
-      await Promise.all(
-        customItems.map(async (item) => {
-          if (pricingOverrides[item.id]) {
-            resolvedPricing.set(item.id, pricingOverrides[item.id]);
-            return;
-          }
-          const next = await fetchPricing(item, dueDate || undefined);
-          resolvedPricing.set(item.id, next);
-        })
-      );
-
-      const needsSplit = hasCustomItems && hasPremadeItems;
-      let customOrderNumber: string | null = null;
-      let premadeOrderNumber: string | null = null;
-      let cartOrderNumber: string | null = null;
-
-      if (needsSplit) {
-        const baseOrderNumber = await fetchOrderNumber();
-        customOrderNumber = `${baseOrderNumber}-a`;
-        premadeOrderNumber = `${baseOrderNumber}-b`;
-        cartOrderNumber = baseOrderNumber;
-      }
-      const quoteOrderRefs: QuoteOrderRef[] = [];
-
-      for (const item of customItems) {
-        const pricing = resolvedPricing.get(item.id) ?? pricingOverrides[item.id] ?? null;
-        const totalPrice = pricing?.total ?? item.totalPrice ?? null;
-        const totalWeightKg = pricing?.totalWeightKg ?? item.totalWeightKg ?? null;
-        if (!totalWeightKg || totalWeightKg <= 0) {
-          throw new Error("Order weight is missing.");
-        }
-
-        const payload = {
-          title: item.title,
-          description: item.description,
-          dateRequired: dueDate,
-          pickup,
-          state: stateValue,
-          location: pickup ? "Pickup" : suburb,
-          orderNumber: needsSplit ? customOrderNumber ?? undefined : cartOrderNumber ?? undefined,
-          designType: item.designType,
-          designText: item.designText,
-          jacketType: item.jacketType,
-          jacketColorOne: item.jacketColorOne,
-          jacketColorTwo: item.jacketColorTwo,
-          textColor: item.textColor,
-          heartColor: item.heartColor,
-          flavor: item.flavor,
-          paymentMethod,
-          logoUrl: item.logoUrl,
-          labelImageUrl: item.labelImageUrl,
-          labelTypeId: item.labelTypeId,
-          notes: item.ingredientLabelsOptIn ? "Ingredient labels requested." : undefined,
-          customerName: `${firstName.trim()} ${lastName.trim()}`.trim(),
-          customerEmail: email.trim(),
+      const payload = {
+        dueDate: dueDate || undefined,
+        pickup,
+        paymentPreference: paymentMethod || null,
+        customer: {
           firstName: firstName.trim(),
           lastName: lastName.trim(),
+          email: email.trim(),
           phone: phone.trim(),
           organizationName: organizationName.trim() || undefined,
-          addressLine1: pickup ? undefined : addressLine1.trim(),
-          addressLine2: pickup ? undefined : addressLine2.trim(),
-          suburb: pickup ? undefined : suburb.trim(),
-          postcode: pickup ? undefined : postcode.trim(),
+          addressLine1: addressLine1.trim(),
+          addressLine2: addressLine2.trim(),
+          suburb: suburb.trim(),
+          postcode: postcode.trim(),
+          state: stateValue,
+        },
+        customItems: customItems.map((item) => ({
+          id: item.id,
+          title: item.title,
+          description: item.description,
           categoryId: item.categoryId,
           packagingOptionId: item.packagingOptionId,
           quantity: item.quantity,
+          packagingLabel: item.packagingLabel,
           jarLidColor: item.jarLidColor,
-          labelsCount: item.labelsCount ?? undefined,
-          jacket: item.jacket,
-          totalWeightKg,
-          totalPrice,
-        };
+          labelsCount: item.labelsCount ?? null,
+          labelImageUrl: item.labelImageUrl ?? null,
+          labelTypeId: item.labelTypeId ?? null,
+          ingredientLabelsOptIn: item.ingredientLabelsOptIn ?? false,
+          jacket: item.jacket ?? null,
+          jacketType: item.jacketType ?? null,
+          jacketColorOne: item.jacketColorOne ?? null,
+          jacketColorTwo: item.jacketColorTwo ?? null,
+          textColor: item.textColor ?? null,
+          heartColor: item.heartColor ?? null,
+          flavor: item.flavor ?? null,
+          logoUrl: item.logoUrl ?? null,
+          designType: item.designType ?? null,
+          designText: item.designText ?? null,
+          jacketExtras: item.jacketExtras ?? [],
+        })),
+        premadeItems: premadeItems.map((item) => ({ premadeId: item.premadeId, quantity: item.quantity })),
+      };
 
-        const response = await fetch("/api/orders", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data.error || "Unable to place order");
-        }
-
-        const data = (await response.json().catch(() => ({}))) as { id?: string; orderNumber?: string | null };
-        if (!needsSplit && !cartOrderNumber && data.orderNumber) {
-          cartOrderNumber = data.orderNumber;
-        }
-        quoteOrderRefs.push({
-          id: data.id ?? item.id,
-          orderNumber: data.orderNumber ?? null,
-          title: item.title ?? null,
-        });
+      const response = await fetch("/api/woo/create-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Unable to start payment");
       }
-
-      if (premadeItems.length > 0) {
-        const quoteLabel = buildQuoteOrderLabel(quoteOrderRefs);
-        for (const item of premadeItems) {
-          const totalWeightKg = (Number(item.weight_g) * item.quantity) / 1000;
-          if (!Number.isFinite(totalWeightKg) || totalWeightKg <= 0) {
-            throw new Error("Premade item weight is missing.");
-          }
-          const totalPrice = Number(item.price) * item.quantity;
-          const weightLabel = formatWeight(item.weight_g);
-          const description = weightLabel ? `${weightLabel} premade candy` : "Premade candy";
-          const payload = {
-            title: item.name,
-            description,
-            dateRequired: dueDate,
-            pickup,
-            state: stateValue,
-            location: pickup ? "Pickup" : suburb,
-            orderNumber: needsSplit ? premadeOrderNumber ?? undefined : cartOrderNumber ?? undefined,
-            designType: "premade",
-            designText: item.name,
-            paymentMethod,
-            notes: quoteLabel || undefined,
-            customerName: `${firstName.trim()} ${lastName.trim()}`.trim(),
-            customerEmail: email.trim(),
-            firstName: firstName.trim(),
-            lastName: lastName.trim(),
-            phone: phone.trim(),
-            organizationName: organizationName.trim() || undefined,
-            addressLine1: pickup ? undefined : addressLine1.trim(),
-            addressLine2: pickup ? undefined : addressLine2.trim(),
-            suburb: pickup ? undefined : suburb.trim(),
-            postcode: pickup ? undefined : postcode.trim(),
-            quantity: item.quantity,
-            totalWeightKg,
-            totalPrice,
-          };
-
-          const response = await fetch("/api/orders", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          if (!response.ok) {
-            const data = await response.json().catch(() => ({}));
-            throw new Error(data.error || "Unable to place premade order");
-          }
-          if (!needsSplit && !cartOrderNumber) {
-            const data = (await response.json().catch(() => ({}))) as { orderNumber?: string | null };
-            if (data.orderNumber) {
-              cartOrderNumber = data.orderNumber;
-            }
-          }
-        }
+      const data = (await response.json().catch(() => ({}))) as { paymentUrl?: string };
+      if (!data.paymentUrl) {
+        throw new Error("Payment link is missing.");
       }
-
-      customItems.forEach((item) => removeItem(item.id));
-      premadeItems.forEach((item) => removeItem(item.id));
-      setPlaceSuccess(true);
+      window.location.href = data.paymentUrl;
     } catch (error) {
-      setPlaceError(error instanceof Error ? error.message : "Unable to place order");
+      setPlaceError(error instanceof Error ? error.message : "Unable to start payment");
     } finally {
       setPlacing(false);
     }
@@ -1129,8 +1002,11 @@ export function CheckoutClient({
           </div>
 
           <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <h3 className="text-lg font-semibold text-zinc-900">Payment method</h3>
+            <h3 className="text-lg font-semibold text-zinc-900">Payment</h3>
             <div className="mt-3">
+              <p className="mb-3 text-xs text-zinc-500">
+                You will choose the final payment method on the secure WooCommerce checkout.
+              </p>
               <div className="flex w-full flex-col overflow-hidden rounded-2xl border border-[#e91e63] bg-[#fedae1] divide-y divide-[#e91e63]/30">
                 {PAYMENT_METHODS.map((method) => {
                   const isActive = paymentMethod === method;
@@ -1332,7 +1208,7 @@ export function CheckoutClient({
                   : "border border-zinc-200 bg-zinc-100 text-zinc-500 hover:border-zinc-300"
             }`}
           >
-            {placing ? "Placing..." : "Place order"}
+            {placing ? "Redirecting..." : "Proceed to payment"}
           </button>
         </div>
       </section>

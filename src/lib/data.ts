@@ -148,6 +148,11 @@ export type OrderRow = {
   address_line2: string | null;
   suburb: string | null;
   postcode: string | null;
+  woo_order_id: string | null;
+  woo_order_status: string | null;
+  woo_order_key: string | null;
+  woo_payment_url: string | null;
+  paid_at: string | null;
   created_at: string;
 };
 
